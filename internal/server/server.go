@@ -476,11 +476,13 @@ func (s *Server) handlePromptsPoll(w http.ResponseWriter, r *http.Request) {
 // page's own: many video hosts refuse requests without the right Referer or
 // the site's cookies.
 type browserContext struct {
-	Referer string            `json:"referer,omitempty"` // page the link / video was found on
-	PageURL string            `json:"pageUrl,omitempty"` // alias of referer
-	Headers map[string]string `json:"headers,omitempty"` // extra request headers (Origin, Authorization, …)
-	Cookies string            `json:"cookies,omitempty"` // "a=1; b=2" for the file's site
-	Ctx     string            `json:"ctx,omitempty"`     // token from /api/prompt (dialog round-trip)
+	Referer   string            `json:"referer,omitempty"`   // page the link / video was found on
+	Referrer  string            `json:"referrer,omitempty"`  // alias (the DOM's document.referrer spelling)
+	PageURL   string            `json:"pageUrl,omitempty"`   // alias of referer
+	Headers   map[string]string `json:"headers,omitempty"`   // extra request headers (Origin, Authorization, …)
+	Cookies   string            `json:"cookies,omitempty"`   // "a=1; b=2" for the file's site
+	UserAgent string            `json:"userAgent,omitempty"` // the browser's own agent (Cloudflare ties cookies to it)
+	Ctx       string            `json:"ctx,omitempty"`       // token from /api/prompt (dialog round-trip)
 }
 
 // resolveContext merges a stored prompt context with explicit fields.
@@ -494,16 +496,20 @@ func (s *Server) resolveContext(bc browserContext) (referer string, headers map[
 			}
 		}
 	}
-	if bc.Referer != "" {
-		referer = bc.Referer
-	} else if bc.PageURL != "" && referer == "" {
-		referer = bc.PageURL
+	for _, r := range []string{bc.Referer, bc.Referrer, bc.PageURL} {
+		if strings.TrimSpace(r) != "" {
+			referer = r
+			break
+		}
 	}
 	for k, v := range bc.Headers {
 		headers[k] = v
 	}
 	if c := strings.TrimSpace(bc.Cookies); c != "" {
 		headers["Cookie"] = c
+	}
+	if ua := strings.TrimSpace(bc.UserAgent); ua != "" {
+		headers["User-Agent"] = ua
 	}
 	return referer, engine.CleanHeaders(headers)
 }

@@ -31,12 +31,16 @@ const sniffLen = 4096
 
 // probeStatusError is a non-success HTTP answer to the probe.
 type probeStatusError struct {
-	code   int
-	status string
+	code      int
+	status    string
+	challenge bool // Cloudflare answered with a bot check ("cf-mitigated: challenge")
 }
 
 func (p *probeStatusError) Error() string {
 	msg := "server returned " + p.status
+	if p.challenge {
+		return msg + " — the site's Cloudflare bot check blocked the request"
+	}
 	switch p.code {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		msg += " — the link may have expired, need a login, or only work from the page it came from"
@@ -162,7 +166,8 @@ func (e *Engine) probeOnce(ctx context.Context, rawURL string, ri reqInfo, range
 			}
 		default:
 			resp.Body.Close()
-			return probeResult{}, nil, &probeStatusError{code: resp.StatusCode, status: resp.Status}
+			return probeResult{}, nil, &probeStatusError{code: resp.StatusCode, status: resp.Status,
+				challenge: isChallenge(resp)}
 		}
 		sniff := make([]byte, sniffLen)
 		n, _ := io.ReadFull(resp.Body, sniff)
@@ -189,6 +194,11 @@ func (e *Engine) headSize(ctx context.Context, rawURL string, ri reqInfo) int64 
 		return 0
 	}
 	return resp.ContentLength
+}
+
+// isChallenge reports a Cloudflare bot-check answer.
+func isChallenge(resp *http.Response) bool {
+	return strings.EqualFold(resp.Header.Get("Cf-Mitigated"), "challenge")
 }
 
 func isIdentityEncoding(ce string) bool {

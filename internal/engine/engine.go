@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1255,6 +1256,9 @@ func (e *Engine) runHTTP(ctx context.Context, t *Task) {
 					e.finishInterrupted(t)
 					return
 				}
+				if e.handToYtdlp(ctx, t, err) {
+					return
+				}
 				e.finishTask(t, fmt.Errorf("probe: %w", err))
 				return
 			}
@@ -1471,9 +1475,22 @@ func (e *Engine) runYtdlp(ctx context.Context, t *Task) {
 	e.runYtdlpNative(ctx, t)
 }
 
-// ytdlpOpts is the browser context a task hands to yt-dlp.
+// ytdlpOpts is the browser context a task hands to yt-dlp. A User-Agent the
+// browser supplied (with its cookies) wins over ours: Cloudflare ties its
+// clearance cookie to the exact agent that earned it.
 func (e *Engine) ytdlpOpts(t *Task) ytdlp.Opts {
-	return ytdlp.Opts{UserAgent: e.userAgent(), Referer: t.Referer, Headers: t.Headers}
+	o := ytdlp.Opts{UserAgent: e.userAgent(), Referer: t.Referer}
+	for k, v := range t.Headers {
+		if strings.EqualFold(k, "User-Agent") {
+			o.UserAgent = v
+			continue
+		}
+		if o.Headers == nil {
+			o.Headers = map[string]string{}
+		}
+		o.Headers[k] = v
+	}
+	return o
 }
 
 // ensureFFmpeg makes ffmpeg available for merging/converting, fetching it once
@@ -1654,21 +1671,76 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 		return
 	}
 
+	opts := e.ytdlpOpts(t)
+	started := time.Now()
+	var reported string
+	for {
+		fp, msg, err := e.ytdlpAttempt(ctx, t, opts)
+		if ctx.Err() != nil { // paused / deleted / shutdown
+			e.finishInterrupted(t)
+			return
+		}
+		if err == nil {
+			reported = fp
+			break
+		}
+		// A site's bot check (Cloudflare) turned yt-dlp's plain requests away;
+		// yt-dlp itself names the fix — retry once looking like a real browser.
+		if !opts.Impersonate && ytdlp.NeedsImpersonation(msg) {
+			opts.Impersonate = true
+			e.log.Info("site blocked yt-dlp; retrying with browser impersonation", "id", t.ID)
+			e.setNote(t, "Retrying as a browser…")
+			continue
+		}
+		e.finishTask(t, fmt.Errorf("yt-dlp: %s", msg))
+		return
+	}
+
+	finalPath := e.pickYtdlpOutput(ctx, t, reported, started)
+	if !fileExistsOnDisk(finalPath) {
+		e.finishTask(t, fmt.Errorf("yt-dlp finished but produced no file"))
+		return
+	}
+
+	e.mu.Lock()
+	now := time.Now()
+	if st, err := os.Stat(finalPath); err == nil {
+		t.Size = st.Size()
+		t.Segments[0].End = t.Size - 1
+		t.Segments[0].SetDone(t.Size)
+	}
+	t.Status = StatusCompleted
+	t.CompletedAt = &now
+	t.FinalPath = finalPath
+	t.FileName = filepath.Base(finalPath)
+	t.SizeEstimated = false
+	t.note = ""
+	t.cancel = nil
+	e.running--
+	e.completionsSinceArm++ // a real completion (not a pause/fail) counts toward auto-shutdown
+	e.saveLocked()
+	e.mu.Unlock()
+	e.poke()
+	e.log.Info("video task completed", "id", t.ID, "file", finalPath)
+	e.notifyCompleted(t.ID)
+}
+
+// ytdlpAttempt runs yt-dlp once, streaming its progress into the task. It
+// returns the destination yt-dlp reported, and on failure the most useful
+// error line.
+func (e *Engine) ytdlpAttempt(ctx context.Context, t *Task, opts ytdlp.Opts) (string, string, error) {
 	outTmpl := filepath.Join(t.Dir, SanitizeFileName(t.Title)+".%(ext)s")
-	cmd := ytdlp.DownloadCmd(ctx, t.URL, t.Selector, outTmpl, e.ytdlpOpts(t), t.Audio, e.cfg.Segments)
+	cmd := ytdlp.DownloadCmd(ctx, t.URL, t.Selector, outTmpl, opts, t.Audio, e.cfg.Segments)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		e.finishTask(t, err)
-		return
+		return "", err.Error(), err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		e.finishTask(t, err)
-		return
+		return "", err.Error(), err
 	}
 	if err := cmd.Start(); err != nil {
-		e.finishTask(t, err)
-		return
+		return "", err.Error(), err
 	}
 
 	var (
@@ -1761,11 +1833,6 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 	go func() { defer swg.Done(); scan(stderr, true) }()
 	swg.Wait()
 	waitErr := cmd.Wait()
-
-	if ctx.Err() != nil { // paused / deleted / shutdown
-		e.finishInterrupted(t)
-		return
-	}
 	if waitErr != nil {
 		smu.Lock()
 		msg := errTail
@@ -1773,47 +1840,110 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 		if msg == "" {
 			msg = waitErr.Error()
 		}
-		e.finishTask(t, fmt.Errorf("yt-dlp: %s", msg))
-		return
+		return finalPath, msg, waitErr
 	}
+	return finalPath, "", nil
+}
 
-	// Resolve the output against the filesystem, not yt-dlp's stdout: the
-	// reported destination can be mangled (see DownloadCmd) or name an
-	// intermediate file the merge/extract step has since replaced. Trust the
-	// reported path only when it exists; otherwise locate the real file by its
-	// correctly-encoded output stem.
-	if finalPath != "" && !filepath.IsAbs(finalPath) {
-		finalPath = filepath.Join(t.Dir, finalPath)
+// pickYtdlpOutput decides which file a finished yt-dlp run produced, checked
+// against the filesystem rather than trusting yt-dlp's stdout (the reported
+// destination can be mangled, or name an intermediate file the merge step has
+// since replaced). When a video+audio download was left as two separate
+// format files (yt-dlp couldn't merge them), they're merged here — before,
+// the row pointed at whichever finished last: the audio.
+func (e *Engine) pickYtdlpOutput(ctx context.Context, t *Task, reported string, since time.Time) string {
+	stem := SanitizeFileName(t.Title)
+	if reported != "" && !filepath.IsAbs(reported) {
+		reported = filepath.Join(t.Dir, reported)
 	}
-	if !fileExistsOnDisk(finalPath) {
-		finalPath = findProducedFile(t.Dir, SanitizeFileName(t.Title))
+	if !t.Audio {
+		if parts := formatParts(t.Dir, stem, since); len(parts) >= 2 {
+			if merged := e.mergeParts(ctx, t, stem, parts); merged != "" {
+				return merged
+			}
+			return keepVideoPart(t.Dir, stem, parts)
+		}
 	}
-	if !fileExistsOnDisk(finalPath) {
-		e.finishTask(t, fmt.Errorf("yt-dlp finished but produced no file"))
-		return
+	if fileExistsOnDisk(reported) {
+		return reported
 	}
+	return findProducedFile(t.Dir, stem)
+}
 
-	e.mu.Lock()
-	now := time.Now()
-	if st, err := os.Stat(finalPath); err == nil {
-		t.Size = st.Size()
-		t.Segments[0].End = t.Size - 1
-		t.Segments[0].SetDone(t.Size)
+// formatParts lists yt-dlp's per-format files ("<stem>.f137.mp4",
+// "<stem>.f140.m4a") written since the run started.
+func formatParts(dir, stem string, since time.Time) []string {
+	re := regexp.MustCompile(`^` + regexp.QuoteMeta(stem) + `\.f[0-9A-Za-z_-]+\.[0-9A-Za-z]+$`)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
 	}
-	t.Status = StatusCompleted
-	t.CompletedAt = &now
-	t.FinalPath = finalPath
-	t.FileName = filepath.Base(finalPath)
-	t.SizeEstimated = false
-	t.note = ""
-	t.cancel = nil
-	e.running--
-	e.completionsSinceArm++ // a real completion (not a pause/fail) counts toward auto-shutdown
-	e.saveLocked()
-	e.mu.Unlock()
-	e.poke()
-	e.log.Info("video task completed", "id", t.ID, "file", finalPath)
-	e.notifyCompleted(t.ID)
+	var out []string
+	for _, en := range ents {
+		if en.IsDir() || !re.MatchString(en.Name()) {
+			continue
+		}
+		if fi, err := en.Info(); err == nil && !fi.ModTime().Before(since.Add(-time.Minute)) && fi.Size() > 0 {
+			out = append(out, filepath.Join(dir, en.Name()))
+		}
+	}
+	return out
+}
+
+// keepVideoPart handles unmergeable parts (no ffmpeg): the largest part is the
+// video; it gets the clean name, and the audio is kept beside it as
+// "<name> (audio).<ext>" rather than being thrown away.
+func keepVideoPart(dir, stem string, parts []string) string {
+	video := largestFile(parts)
+	final := uniquePath(filepath.Join(dir, stem+filepath.Ext(video)))
+	if os.Rename(video, final) != nil {
+		final = video
+	}
+	for _, p := range parts {
+		if p != video {
+			os.Rename(p, uniquePath(filepath.Join(dir, stem+" (audio)"+filepath.Ext(p))))
+		}
+	}
+	return final
+}
+
+func largestFile(paths []string) string {
+	best, bestSize := "", int64(-1)
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && fi.Size() > bestSize {
+			best, bestSize = p, fi.Size()
+		}
+	}
+	return best
+}
+
+// mergeParts joins separate video/audio format files with ffmpeg (stream copy)
+// and removes the parts. "" when ffmpeg is missing or the merge fails.
+func (e *Engine) mergeParts(ctx context.Context, t *Task, stem string, parts []string) string {
+	if !ytdlp.HasFFmpeg() {
+		return ""
+	}
+	ext := "mp4"
+	for _, p := range parts {
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".mp4", ".m4a", ".m4v", ".mov":
+		default:
+			ext = "mkv" // webm/opus/other codecs: MKV holds anything
+		}
+	}
+	e.setNote(t, "Merging…")
+	out := uniquePath(filepath.Join(t.Dir, stem+"."+ext))
+	mctx, cancel := context.WithTimeout(e.appCtx(), 10*time.Minute)
+	defer cancel()
+	if err := ytdlp.MergeCmd(mctx, parts, out).Run(); err != nil {
+		os.Remove(out)
+		e.log.Info("merging yt-dlp format files failed", "id", t.ID, "err", err)
+		return ""
+	}
+	for _, p := range parts {
+		os.Remove(p)
+	}
+	return out
 }
 
 // findProducedFile finds the newest non-temp file in dir whose name starts with

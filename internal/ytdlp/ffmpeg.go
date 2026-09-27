@@ -200,3 +200,22 @@ func RemuxCmd(ctx context.Context, in, out string) *exec.Cmd {
 	procutil.Hidden(cmd)
 	return cmd
 }
+
+// MergeCmd joins separate format files (a video-only and an audio-only stream
+// that yt-dlp couldn't merge) into one container, stream copy.
+func MergeCmd(ctx context.Context, inputs []string, out string) *exec.Cmd {
+	args := []string{"-y", "-loglevel", "error"}
+	for _, in := range inputs {
+		args = append(args, "-i", in)
+	}
+	for i := range inputs {
+		args = append(args, "-map", fmt.Sprintf("%d:v?", i), "-map", fmt.Sprintf("%d:a?", i))
+	}
+	args = append(args, "-c", "copy")
+	if strings.HasSuffix(strings.ToLower(out), ".mp4") {
+		args = append(args, "-movflags", "+faststart")
+	}
+	cmd := exec.CommandContext(ctx, ffmpegPath(), append(args, out)...)
+	procutil.Hidden(cmd)
+	return cmd
+}

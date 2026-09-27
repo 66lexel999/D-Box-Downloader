@@ -87,11 +87,17 @@ func (tr *hlsTrack) rememberMap(seq int64, m *hlsMap) {
 
 // httpStatusError is a non-success HTTP answer for a segment/key/playlist.
 type httpStatusError struct {
-	code   int
-	status string
+	code      int
+	status    string
+	challenge bool // Cloudflare bot check
 }
 
-func (h *httpStatusError) Error() string { return "server returned " + h.status }
+func (h *httpStatusError) Error() string {
+	if h.challenge {
+		return "server returned " + h.status + " — the site's Cloudflare bot check blocked the request"
+	}
+	return "server returned " + h.status
+}
 
 // permanent reports whether retrying cannot help (4xx other than timeouts and
 // rate limits).
@@ -162,6 +168,9 @@ func (e *Engine) runHLS(ctx context.Context, t *Task) {
 	e.setNote(t, "Reading playlist…")
 	top, topURL, err := e.fetchPlaylist(ctx, t.URL, ri)
 	if err != nil {
+		if ctx.Err() == nil && e.handToYtdlp(ctx, t, err) {
+			return
+		}
 		fail(fmt.Errorf("playlist: %w", err))
 		return
 	}
@@ -178,6 +187,9 @@ func (e *Engine) runHLS(ctx context.Context, t *Task) {
 		bandwidth = v.Bandwidth
 		vpl, vurl, err := e.fetchPlaylist(ctx, v.URI, ri)
 		if err != nil {
+			if ctx.Err() == nil && e.handToYtdlp(ctx, t, err) {
+				return
+			}
 			fail(fmt.Errorf("video playlist: %w", err))
 			return
 		}
@@ -325,7 +337,7 @@ func (e *Engine) fetchPlaylist(ctx context.Context, rawURL string, ri reqInfo) (
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			resp.Body.Close()
-			se := &httpStatusError{code: resp.StatusCode, status: resp.Status}
+			se := &httpStatusError{code: resp.StatusCode, status: resp.Status, challenge: isChallenge(resp)}
 			if se.permanent() {
 				return nil, "", se
 			}
@@ -784,7 +796,7 @@ func (e *Engine) getBytes(ctx context.Context, rawURL string, off, n int64, ri r
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &httpStatusError{code: resp.StatusCode, status: resp.Status}
+		return nil, &httpStatusError{code: resp.StatusCode, status: resp.Status, challenge: isChallenge(resp)}
 	}
 	if resp.ContentLength > hlsMaxSegment {
 		return nil, fmt.Errorf("segment too large (%d bytes)", resp.ContentLength)

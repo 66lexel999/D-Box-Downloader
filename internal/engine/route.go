@@ -8,7 +8,9 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"myidm/internal/ytdlp"
@@ -96,4 +98,57 @@ func (e *Engine) adoptStream(t *Task, pr probeResult) {
 	t.Size, t.SizeEstimated = -1, false
 	t.Segments = []*Segment{{Start: 0, End: -1}}
 	e.saveLocked()
+}
+
+// refused reports an HTTP refusal (auth, forbidden, rate limit, bot check)
+// that yt-dlp — with browser impersonation — may get past.
+func refused(err error) bool {
+	var pe *probeStatusError
+	if errors.As(err, &pe) {
+		return pe.challenge || pe.code == http.StatusUnauthorized || pe.code == http.StatusForbidden || pe.code == http.StatusTooManyRequests
+	}
+	var he *httpStatusError
+	if errors.As(err, &he) {
+		return he.challenge || he.code == http.StatusUnauthorized || he.code == http.StatusForbidden || he.code == http.StatusTooManyRequests
+	}
+	return false
+}
+
+// streamLike reports URLs yt-dlp's generic extractor can take on directly:
+// stream manifests and media files.
+func streamLike(rawURL string) bool {
+	_, ext := splitExt(pathName(rawURL))
+	return mediaExts[ext] || ext == "m3u8" || ext == "mpd"
+}
+
+// handToYtdlp re-routes a stream/media task that the server refused to D BOX's
+// own requests (typically a Cloudflare bot check) to yt-dlp, which retries as a
+// real browser. Returns true when it took the task over (and drove it to a
+// terminal state).
+func (e *Engine) handToYtdlp(ctx context.Context, t *Task, cause error) bool {
+	if !refused(cause) || !streamLike(t.URL) || !ytdlp.Available() {
+		return false
+	}
+	e.mu.Lock()
+	title := ""
+	if s, _ := splitExt(t.FileName); t.FileName != "" && !isGenericStem(s) {
+		title = s
+	}
+	if title == "" {
+		title = streamBaseName(t.Title, t.URL, t.Referer)
+	}
+	t.Kind = "ytdlp"
+	t.Selector = "bv*+ba/b"
+	t.Audio = false
+	t.Title = title
+	t.FileName = SanitizeFileName(title) + ".mp4"
+	t.Probed = true
+	t.Live = false
+	t.Size, t.SizeEstimated = -1, false
+	t.Segments = []*Segment{{Start: 0, End: -1}}
+	e.saveLocked()
+	e.mu.Unlock()
+	e.log.Info("server refused D BOX's requests; handing the stream to yt-dlp", "id", t.ID, "err", cause)
+	e.runYtdlp(ctx, t)
+	return true
 }

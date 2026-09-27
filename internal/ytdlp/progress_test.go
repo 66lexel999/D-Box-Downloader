@@ -62,3 +62,14 @@ func TestOptsArgs(t *testing.T) {
 
 // scaled mirrors the parser's float math at run time (constants can't truncate).
 func scaled(v float64, shift uint) int64 { return int64(v * float64(uint64(1)<<shift)) }
+
+func TestNeedsImpersonation(t *testing.T) {
+	yes := `ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge; try again with --extractor-args "generic:impersonate"`
+	if !NeedsImpersonation(yes) || NeedsImpersonation("ERROR: Unsupported URL: https://x.test") {
+		t.Error("NeedsImpersonation misclassified")
+	}
+	a := strings.Join(Opts{UserAgent: "UA", Impersonate: true}.args(), " ")
+	if a != "--impersonate chrome --extractor-args generic:impersonate" {
+		t.Errorf("impersonate args = %q (the browser fingerprint must not get our UA)", a)
+	}
+}

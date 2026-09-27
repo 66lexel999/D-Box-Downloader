@@ -434,11 +434,29 @@ type Opts struct {
 	UserAgent string
 	Referer   string
 	Headers   map[string]string // extra headers (Cookie, Origin, Authorization, …)
+	// Impersonate makes yt-dlp present a real browser's network fingerprint
+	// (its bundled curl_cffi) — what it asks for when a site's Cloudflare bot
+	// check turns its plain Python requests away.
+	Impersonate bool
+}
+
+// NeedsImpersonation reports whether a yt-dlp error is a bot check that its
+// browser impersonation gets past (yt-dlp names the fix in the message).
+func NeedsImpersonation(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "cloudflare anti-bot") || strings.Contains(m, "impersonate") ||
+		strings.Contains(m, "cf-mitigated")
 }
 
 // args renders the options as yt-dlp flags.
 func (o Opts) args() []string {
 	var a []string
+	if o.Impersonate {
+		a = append(a, "--impersonate", "chrome", "--extractor-args", "generic:impersonate")
+		// The impersonated client sends its own browser User-Agent; overriding it
+		// would contradict the fingerprint.
+		o.UserAgent = ""
+	}
 	if o.UserAgent != "" {
 		a = append(a, "--user-agent", o.UserAgent)
 	}
@@ -528,7 +546,12 @@ func Probe(ctx context.Context, url string, o Opts) (*ProbeResult, error) {
 	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s", ytdlpErr(err))
+		msg := ytdlpErr(err)
+		if !o.Impersonate && ctx.Err() == nil && NeedsImpersonation(msg) {
+			o.Impersonate = true
+			return Probe(ctx, url, o) // once more, looking like a real browser
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
 	var in info
 	if err := json.Unmarshal(out, &in); err != nil {
@@ -760,7 +783,7 @@ func DownloadCmd(ctx context.Context, url, selector, outTemplate string, o Opts,
 	// Pull many pieces at once to multiply throughput: aria2c (multi-connection
 	// per fragment) when it's available, else yt-dlp's own concurrent-fragment
 	// downloader plus chunked HTTP (which also resets the throttle per chunk).
-	if find("aria2c") != "" {
+	if find("aria2c") != "" && !o.Impersonate { // aria2c can't impersonate a browser
 		// YouTube throttles each connection, so use aria2c's max (16 connections
 		// per server, 16 splits) to multiply throughput past the throttle.
 		args = append(args,

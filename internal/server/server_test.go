@@ -164,3 +164,13 @@ func TestIconCacheFollowsFile(t *testing.T) {
 		t.Fatalf("stale icon after the file changed: %q", got)
 	}
 }
+
+// TestContextAliases: "referrer" (the DOM spelling) and "userAgent" are
+// accepted from the extension, alongside "referer"/"cookies".
+func TestContextAliases(t *testing.T) {
+	s, _, _ := newTestServer(t)
+	ref, h := s.resolveContext(browserContext{Referrer: "https://page.test/v/1", UserAgent: "Brave/1", Cookies: "cf_clearance=x"})
+	if ref != "https://page.test/v/1" || h["User-Agent"] != "Brave/1" || h["Cookie"] != "cf_clearance=x" {
+		t.Fatalf("referer=%q headers=%v", ref, h)
+	}
+}

@@ -639,23 +639,18 @@ const catIcon = (name) => CAT_ICON[name] || "\u{1F4C1}";
 // Categories with a custom raster icon (used everywhere a category icon shows:
 // the sidebar tree, the Options list, and table rows) instead of the emoji glyph.
 const CAT_IMG = { Images: "/icons/picture.png", Video: "/icons/video.png", Compressed: "/icons/compress.png" };
-// Categories whose artwork OVERRIDES even a completed file's real shell icon —
-// pictures & videos always show their own artwork. Compressed is NOT here: a
-// finished archive still shows its real handler icon (WinRAR/7-Zip); the compress
-// artwork is only its category/in-progress glyph.
-const CAT_IMG_ALWAYS = new Set(["Images", "Video"]);
 // HTML form of a category icon: a small <img> when the category has custom
 // artwork, otherwise the plain emoji glyph.
 const catIconHTML = (name) => CAT_IMG[name] ? `<img class="catimg" src="${CAT_IMG[name]}" alt="">` : catIcon(name);
-// A download row's file icon: pictures/videos always use their custom artwork;
-// any other completed file uses the REAL Windows shell icon (the app's own icon
-// for an .exe, the default associated app's for others — WinRAR for archives,
-// etc.); in-progress / no-file rows use the category artwork (Compressed) or its
-// emoji. The server 404s archives with only the generic Windows handler, so
-// onerror falls back to the category icon.
+// A download row's file icon. Every completed file whose file is on disk uses
+// the REAL Windows icon — the default app's icon for its type (your video
+// player for .mp4, WinRAR for .rar, the program's own icon for an .exe) — the
+// same icon Explorer shows. Videos and pictures used to be forced to D BOX's own
+// artwork, so identical .mp4 rows showed different icons depending on which
+// folder they were saved in. In-progress or missing files use the category
+// artwork (or emoji); onerror falls back to it too.
 function rowIconHTML(t, cat) {
-  if (CAT_IMG_ALWAYS.has(cat)) return `<img class="ic icimg" src="${CAT_IMG[cat]}" alt="">`;
-  if (t.status === "completed" && t.filePath) {
+  if (t.status === "completed" && t.filePath && t.fileExists) {
     // v= changes whenever the file on disk does, so a new download at the same
     // path never reuses the previous file's cached icon.
     return `<img class="ic icimg" src="/api/icon?path=${encodeURIComponent(t.filePath)}&v=${encodeURIComponent(t.fileVersion || "")}" alt="" onerror="iconFallback(this,'${cat}')">`;
