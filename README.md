@@ -17,6 +17,23 @@ stack collapsed for a local single-user app:
 | React SPA                   | embedded single-file UI            |
 | single-stream `io.Copy`     | multi-connection segmented engine  |
 
+## Download
+
+**[`release/DBox.exe`](release/DBox.exe)** — ready to run on Windows 10/11
+(64-bit). Replace your existing `DBox.exe` with it (usually in
+`%LOCALAPPDATA%\Programs\D BOX`) after quitting D BOX from its tray icon.
+Windows may warn about an unsigned app: *More info → Run anyway*. The browser
+extension is in [`extension/`](extension/) (load it unpacked).
+
+This build's in-app auto-update is off, so it isn't replaced by an older
+release. Rebuild it with:
+
+```bash
+GOOS=windows GOARCH=amd64 go build -trimpath -tags "desktop production" \
+  -ldflags "-H windowsgui -X myidm/internal/version.Version=$(cat VERSION)" \
+  -o release/DBox.exe ./cmd/myidm
+```
+
 ## Features
 
 - **Segmented downloads** — up to 32 parallel range connections per file,
