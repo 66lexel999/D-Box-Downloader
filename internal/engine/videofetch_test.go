@@ -107,7 +107,7 @@ func TestBurstFetchYouTubeSpeed(t *testing.T) {
 		t.Skip("yt-dlp not found")
 	}
 	ctx := context.Background()
-	urls, err := ytdlp.ResolveURLs(ctx, "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "299", "")
+	urls, err := ytdlp.ResolveURLs(ctx, "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "299", ytdlp.Opts{})
 	if err != nil || len(urls) == 0 {
 		t.Fatalf("resolve: %v", err)
 	}

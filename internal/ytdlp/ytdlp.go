@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"myidm/internal/procutil"
 )
@@ -40,10 +41,18 @@ func exeName(n string) string {
 // searchDirs are extra roots to look in (set by the engine to the download dir),
 // so dropping yt-dlp.exe / an extracted ffmpeg build into MyIDM's Programs
 // folder just works.
-var searchDirs []string
+var (
+	searchMu   sync.RWMutex
+	searchDirs []string
+)
 
-// SetSearchDirs registers extra directories to scan for the binaries.
-func SetSearchDirs(dirs ...string) { searchDirs = append([]string(nil), dirs...) }
+// SetSearchDirs registers extra directories to scan for the binaries. Safe to
+// call while downloads are running (the download folder can change live).
+func SetSearchDirs(dirs ...string) {
+	searchMu.Lock()
+	searchDirs = append([]string(nil), dirs...)
+	searchMu.Unlock()
+}
 
 func statFile(p string) string {
 	if st, err := os.Stat(p); err == nil && !st.IsDir() {
@@ -71,7 +80,12 @@ func find(name string) string {
 	if self, err := os.Executable(); err == nil {
 		roots = append(roots, filepath.Dir(self))
 	}
+	if td := getToolsDir(); td != "" {
+		roots = append(roots, td) // on-demand tools (ffmpeg) live here
+	}
+	searchMu.RLock()
 	roots = append(roots, searchDirs...)
+	searchMu.RUnlock()
 	for _, root := range roots {
 		if root == "" {
 			continue
@@ -242,6 +256,73 @@ func cookieArgsFor(rawURL string) []string {
 // HasCookiesFor reports whether a cookie jar is on disk for the URL's domain.
 func HasCookiesFor(rawURL string) bool { return len(cookieArgsFor(rawURL)) > 0 }
 
+// CookieHeader builds a "Cookie:" header value for rawURL from the browser-
+// supplied jar of its registrable domain, applying the usual domain / path /
+// secure / expiry matching. "" when there is no jar or nothing matches. Lets
+// plain HTTP downloads (not just yt-dlp) reach login-gated files.
+func CookieHeader(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	path := cookieFilePath(u.Hostname())
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return matchCookies(string(b), u, time.Now())
+}
+
+// matchCookies parses a Netscape cookie jar and returns the cookies that apply
+// to u, as "a=1; b=2".
+func matchCookies(jar string, u *url.URL, now time.Time) string {
+	host := strings.ToLower(u.Hostname())
+	reqPath := u.EscapedPath()
+	if reqPath == "" {
+		reqPath = "/"
+	}
+	var parts []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(jar, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "#HttpOnly_") {
+			line = strings.TrimPrefix(line, "#HttpOnly_")
+		} else if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) < 7 {
+			continue
+		}
+		domain, sub, cpath, secure, exp, name, value := strings.ToLower(f[0]), f[1], f[2], f[3], f[4], f[5], f[6]
+		bare := strings.TrimPrefix(domain, ".")
+		switch {
+		case host == bare:
+		case (sub == "TRUE" || strings.HasPrefix(domain, ".")) && strings.HasSuffix(host, "."+bare):
+		default:
+			continue
+		}
+		if cpath != "" && cpath != "/" && !strings.HasPrefix(reqPath, cpath) {
+			continue
+		}
+		if secure == "TRUE" && u.Scheme != "https" {
+			continue
+		}
+		if e, err := strconv.ParseInt(exp, 10, 64); err == nil && e > 0 && time.Unix(e, 0).Before(now) {
+			continue
+		}
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		parts = append(parts, name+"="+value)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // RegistrableDomain returns a URL's cookie-jar domain (instagram.com for
 // www.instagram.com), or "" if it can't be parsed. Exported so callers can match
 // cookie scope — e.g. invalidating cached probes for the same site.
@@ -346,6 +427,37 @@ func SelfUpdate(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// Opts is the browser context yt-dlp should present: many embedded players
+// (uqload and friends) only serve their stream to requests carrying the page
+// they are embedded in as Referer.
+type Opts struct {
+	UserAgent string
+	Referer   string
+	Headers   map[string]string // extra headers (Cookie, Origin, Authorization, …)
+}
+
+// args renders the options as yt-dlp flags.
+func (o Opts) args() []string {
+	var a []string
+	if o.UserAgent != "" {
+		a = append(a, "--user-agent", o.UserAgent)
+	}
+	if o.Referer != "" {
+		a = append(a, "--referer", o.Referer)
+	}
+	keys := make([]string, 0, len(o.Headers))
+	for k := range o.Headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // stable command lines (and tests)
+	for _, k := range keys {
+		if v := o.Headers[k]; k != "" && v != "" && !strings.EqualFold(k, "Referer") && !strings.EqualFold(k, "User-Agent") {
+			a = append(a, "--add-headers", k+":"+v)
+		}
+	}
+	return a
+}
+
 // Format is the subset of yt-dlp's -J output we care about.
 type Format struct {
 	ID             string  `json:"format_id"`
@@ -401,19 +513,19 @@ type ProbeResult struct {
 }
 
 // Probe runs `yt-dlp -J` and distils the formats into quality options.
-func Probe(ctx context.Context, url, userAgent string) (*ProbeResult, error) {
+func Probe(ctx context.Context, url string, o Opts) (*ProbeResult, error) {
 	bin := Locate()
 	if bin == "" {
 		return nil, ErrNotInstalled
 	}
 	args := []string{"-J", "--no-warnings", "--no-playlist"}
-	if userAgent != "" {
-		args = append(args, "--user-agent", userAgent)
-	}
+	args = append(args, o.args()...)
 	args = append(args, cookieArgsFor(url)...) // login cookies for IG/etc. when the extension supplied them
 	args = append(args, url)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	procutil.Hidden(cmd) // no flashing cmd window under a -H windowsgui parent
+	// UTF-8 mode so titles with non-ASCII characters survive the JSON.
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("%s", ytdlpErr(err))
@@ -487,7 +599,7 @@ type flatPlaylist struct {
 // `yt-dlp --flat-playlist -J` (fast — it doesn't fetch each video's formats).
 // Returns nil (not an error) when the URL isn't a playlist, so callers can fall
 // back to the single-video path.
-func ProbePlaylist(ctx context.Context, url, userAgent string) (*PlaylistInfo, error) {
+func ProbePlaylist(ctx context.Context, url string, o Opts) (*PlaylistInfo, error) {
 	bin := Locate()
 	if bin == "" {
 		return nil, ErrNotInstalled
@@ -497,16 +609,15 @@ func ProbePlaylist(ctx context.Context, url, userAgent string) (*PlaylistInfo, e
 	if mix {
 		args = append(args, "--playlist-end", fmt.Sprint(mixCap)) // endless radio — take the leading queue only
 	}
-	if userAgent != "" {
-		args = append(args, "--user-agent", userAgent)
-	}
+	args = append(args, o.args()...)
+	args = append(args, cookieArgsFor(url)...)
 	args = append(args, url)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	procutil.Hidden(cmd)
 	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("yt-dlp playlist probe failed: %v", err)
+		return nil, fmt.Errorf("yt-dlp playlist probe failed: %s", ytdlpErr(err))
 	}
 	var fp flatPlaylist
 	if err := json.Unmarshal(out, &fp); err != nil {
@@ -627,12 +738,16 @@ func distil(in *info) *ProbeResult {
 
 // DownloadCmd builds the yt-dlp command for a task. outTemplate should be an
 // -o template like "<dir>/<title>.%(ext)s". Resumable via --continue.
-func DownloadCmd(ctx context.Context, url, selector, outTemplate, userAgent string, audio bool, concurrency int) *exec.Cmd {
+func DownloadCmd(ctx context.Context, url, selector, outTemplate string, o Opts, audio bool, concurrency int) *exec.Cmd {
 	if concurrency < 1 {
 		concurrency = 4
 	}
+	selector = SelectorWithoutFFmpeg(selector, audio)
 	args := []string{
 		"--no-warnings", "--no-playlist", "--newline", "--continue",
+		// Stamp files with the download time (like a browser) instead of the
+		// upload date, so new downloads sort as new in Explorer.
+		"--no-mtime",
 		// Default player-client set (matches Probe/ResolveURLs) so the chosen format
 		// — e.g. 1080p — is honored; the android-only override capped quality at 360p.
 		"-f", selector, "-o", outTemplate,
@@ -662,14 +777,15 @@ func DownloadCmd(ctx context.Context, url, selector, outTemplate, userAgent stri
 			"--concurrent-fragments", strconv.Itoa(concurrency),
 			"--http-chunk-size", "10M")
 	}
-	if audio {
+	switch {
+	case audio && ffmpegPath() != "":
 		args = append(args, "-x", "--audio-format", "mp3")
-	} else {
+	case audio:
+		// No ffmpeg to convert: keep the best audio stream as-is (m4a/webm).
+	default:
 		args = append(args, "--merge-output-format", "mp4")
 	}
-	if userAgent != "" {
-		args = append(args, "--user-agent", userAgent)
-	}
+	args = append(args, o.args()...)
 	args = append(args, cookieArgsFor(url)...) // login cookies (IG stories/reels, etc.)
 	args = append(args, url)
 	cmd := exec.CommandContext(ctx, Locate(), args...)
@@ -683,6 +799,23 @@ func DownloadCmd(ctx context.Context, url, selector, outTemplate, userAgent stri
 	return cmd
 }
 
+// SelectorWithoutFFmpeg adapts a format selector when ffmpeg is missing, so
+// yt-dlp picks a stream it can save as ONE playable file. Otherwise yt-dlp
+// downloads video and audio separately, can't merge them, and leaves a silent
+// video. With ffmpeg present the selector is returned unchanged.
+func SelectorWithoutFFmpeg(selector string, audio bool) string {
+	if ffmpegPath() != "" {
+		return selector
+	}
+	if audio {
+		return "ba[ext=m4a]/ba/b"
+	}
+	if strings.Contains(selector, "+") {
+		return "b[vcodec!=none][acodec!=none]/b/" + selector
+	}
+	return selector
+}
+
 // HasFFmpeg reports whether ffmpeg is available (needed to mux the separate
 // video+audio streams the burst downloader fetches).
 func HasFFmpeg() bool { return ffmpegPath() != "" }
@@ -692,7 +825,7 @@ func HasFFmpeg() bool { return ffmpegPath() != "" }
 // (video then audio) for an adaptive selection that needs muxing. These
 // googlevideo URLs are what MyIDM's burst downloader then fetches itself, far
 // faster than letting yt-dlp+aria2c stream them. The URLs are short-lived.
-func ResolveURLs(ctx context.Context, pageURL, selector, userAgent string) ([]string, error) {
+func ResolveURLs(ctx context.Context, pageURL, selector string, o Opts) ([]string, error) {
 	bin := Locate()
 	if bin == "" {
 		return nil, ErrNotInstalled
@@ -706,9 +839,7 @@ func ResolveURLs(ctx context.Context, pageURL, selector, userAgent string) ([]st
 		// The default auto-selects whichever client currently works as YouTube shifts.
 		"-g", "-f", selector,
 	}
-	if userAgent != "" {
-		args = append(args, "--user-agent", userAgent)
-	}
+	args = append(args, o.args()...)
 	args = append(args, cookieArgsFor(pageURL)...) // login cookies (IG stories/reels, etc.)
 	args = append(args, pageURL)
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -743,46 +874,97 @@ func MuxCmd(ctx context.Context, videoPath, audioPath, outPath string) *exec.Cmd
 }
 
 var progressRE = regexp.MustCompile(
-	`\[download\]\s+([\d.]+)% of\s+~?\s*([\d.]+)(K|M|G)iB(?:\s+at\s+([\d.]+)(K|M|G)iB/s)?`)
+	`\[download\]\s+([\d.]+)%\s+of\s+(~)?\s*([\d.]+)\s*([KMGT]i)?B(?:\s+at\s+([\d.]+)\s*([KMGT]i)?B/s)?(?:.*?\(frag (\d+)/(\d+)\))?`)
+
+// progressBytesRE matches yt-dlp's progress when the total is unknown (live
+// streams, chunked origins): "[download]   12.34MiB at  1.23MiB/s (00:00:10)".
+var progressBytesRE = regexp.MustCompile(
+	`\[download\]\s+([\d.]+)\s*([KMGT]i)?B\s+at\s+([\d.]+)\s*([KMGT]i)?B/s`)
+
+// ffmpegSizeRE matches ffmpeg's own progress ("size=   10240kB time=…"), shown
+// when yt-dlp hands a stream to ffmpeg.
+var ffmpegSizeRE = regexp.MustCompile(`size=\s*(\d+)\s*(kB|KiB|MB|MiB|mB|B)\b`)
+
 var destRE = regexp.MustCompile(
 	`(?:\[download\] Destination:|\[Merger\] Merging formats into|\[ExtractAudio\] Destination:)\s+"?(.+?)"?\s*$`)
 
 // Progress is a parsed yt-dlp progress line.
 type Progress struct {
-	Percent  float64
-	Total    int64 // bytes, 0 if unknown
-	SpeedBPS float64
+	Percent    float64 // -1 when only a byte count is known
+	Total      int64   // bytes, 0 if unknown
+	Estimated  bool    // Total is yt-dlp's "~" estimate (fragmented streams)
+	Downloaded int64   // bytes so far, when reported directly (unknown total)
+	SpeedBPS   float64
+	Frag       int // current fragment (HLS/DASH), 0 if not reported
+	Frags      int // total fragments
 }
 
 func unitMul(u string) float64 {
-	switch u {
+	switch strings.TrimSuffix(u, "i") {
 	case "K":
 		return 1 << 10
 	case "M":
 		return 1 << 20
 	case "G":
 		return 1 << 30
+	case "T":
+		return 1 << 40
 	}
 	return 1
 }
 
-// ParseProgress extracts percent/total/speed from a `[download] ... %` line.
+// ParseProgress extracts percent/total/speed from a `[download] ... %` line, or
+// the downloaded byte count when yt-dlp doesn't know the total.
 func ParseProgress(line string) (Progress, bool) {
-	m := progressRE.FindStringSubmatch(line)
-	if m == nil {
+	if m := progressRE.FindStringSubmatch(line); m != nil {
+		var p Progress
+		p.Percent, _ = strconv.ParseFloat(m[1], 64)
+		p.Estimated = m[2] == "~"
+		if v, err := strconv.ParseFloat(m[3], 64); err == nil {
+			p.Total = int64(v * unitMul(m[4]))
+		}
+		if m[5] != "" {
+			if v, err := strconv.ParseFloat(m[5], 64); err == nil {
+				p.SpeedBPS = v * unitMul(m[6])
+			}
+		}
+		if m[7] != "" {
+			p.Frag, _ = strconv.Atoi(m[7])
+			p.Frags, _ = strconv.Atoi(m[8])
+		}
+		return p, true
+	}
+	if m := progressBytesRE.FindStringSubmatch(line); m != nil {
+		p := Progress{Percent: -1}
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			p.Downloaded = int64(v * unitMul(m[2]))
+		}
+		if v, err := strconv.ParseFloat(m[3], 64); err == nil {
+			p.SpeedBPS = v * unitMul(m[4])
+		}
+		return p, true
+	}
+	return Progress{}, false
+}
+
+// ParseFFmpegProgress reads the byte count from an ffmpeg "size=" status line.
+func ParseFFmpegProgress(line string) (Progress, bool) {
+	m := ffmpegSizeRE.FindStringSubmatch(line)
+	if m == nil || !strings.Contains(line, "time=") {
 		return Progress{}, false
 	}
-	var p Progress
-	p.Percent, _ = strconv.ParseFloat(m[1], 64)
-	if v, err := strconv.ParseFloat(m[2], 64); err == nil {
-		p.Total = int64(v * unitMul(m[3]))
+	v, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return Progress{}, false
 	}
-	if m[4] != "" {
-		if v, err := strconv.ParseFloat(m[4], 64); err == nil {
-			p.SpeedBPS = v * unitMul(m[5])
-		}
+	mul := int64(1)
+	switch m[2] {
+	case "kB", "KiB":
+		mul = 1 << 10
+	case "MB", "MiB", "mB":
+		mul = 1 << 20
 	}
-	return p, true
+	return Progress{Percent: -1, Downloaded: v * mul}, true
 }
 
 // ParseDestination returns the output path yt-dlp reports for a stream/merge.

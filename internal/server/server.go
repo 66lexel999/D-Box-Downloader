@@ -98,6 +98,8 @@ type Server struct {
 	closeMu      sync.Mutex       // guards popupCloseAt
 	popupCloseAt map[string]int64 // task id -> client wall-clock ms of the latest popup-close request
 
+	ctxs ctxStore // browser context (referer/headers) handed from /api/prompt to the dialog
+
 	updCurrent  string     // running version ("dev" disables updates)
 	updManifest string     // latest.json URL ("" disables updates)
 	updExit     func()     // fully exit the process (for the post-update relaunch)
@@ -117,8 +119,8 @@ type iconEntry struct {
 
 func New(eng *engine.Engine, log *slog.Logger) *Server {
 	s := &Server{eng: eng, log: log, popupCloseAt: map[string]int64{}}
-	s.probes = newProbeCache(func(ctx context.Context, url string) (*ytdlp.ProbeResult, error) {
-		return ytdlp.Probe(ctx, url, eng.UserAgent())
+	s.probes = newProbeCache(func(ctx context.Context, url string, o ytdlp.Opts) (*ytdlp.ProbeResult, error) {
+		return ytdlp.Probe(ctx, url, o)
 	})
 	return s
 }
@@ -197,18 +199,23 @@ func (s *Server) handleIcon(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	b := s.iconFor(path)
+	b, degraded := s.iconFor(path)
 	if len(b) == 0 {
 		http.NotFound(w, r)
 		return
 	}
-	// Revalidate instead of long-lived caching: a degraded icon (extension
-	// fallback while AV held the file) upgrades to the real one within ~45s, and
-	// a fixed max-age would pin the stale image in WebView2 for an hour. The
-	// ETag keeps the common case a 304 with no body.
 	etag := fmt.Sprintf(`"%x-%x"`, len(b), fnv32(b))
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "no-cache")
+	if r.URL.Query().Get("v") != "" && !degraded {
+		// The UI versions the URL with the file's mtime+size, so a given URL
+		// always means the same icon: let the WebView keep it instead of
+		// revalidating on every table repaint.
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+	} else {
+		// Revalidate: a degraded icon (extension fallback while AV held the
+		// file) upgrades to the real one within ~45s.
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -226,19 +233,26 @@ func fnv32(b []byte) uint32 {
 	return h
 }
 
-// iconFor extracts (and memoizes) a file's icon. Clean successes cache forever.
-// Failures AND degraded results (extension fallback while the file exists —
-// e.g. AV still scanning a fresh .exe) cache only briefly, so the next attempt
-// can produce the file's real icon instead of pinning a generic one all session.
-func (s *Server) iconFor(path string) []byte {
+// iconFor extracts (and memoizes) a file's icon. The cache key is the file's
+// identity — path plus modification time and size — not just its path: a new
+// download that lands on the same path as an earlier file (the earlier one was
+// deleted, or a "setup.exe" replaced) must show ITS icon, not the old app's.
+// Clean successes cache for the file's lifetime. Failures AND degraded results
+// (extension fallback while the file exists — e.g. AV still scanning a fresh
+// .exe) cache only briefly so a retry can produce the real icon.
+func (s *Server) iconFor(path string) ([]byte, bool) {
 	const retryTTL = 45 * time.Second
+	key := path
+	if st, err := os.Stat(path); err == nil {
+		key = fmt.Sprintf("%s|%d|%d", path, st.ModTime().UnixNano(), st.Size())
+	}
 	s.iconMu.Lock()
-	if e, ok := s.iconCache[path]; ok {
+	if e, ok := s.iconCache[key]; ok {
 		if (e.png != nil && !e.degraded) || time.Since(e.at) < retryTTL {
 			s.iconMu.Unlock()
-			return e.png
+			return e.png, e.degraded
 		}
-		delete(s.iconCache, path) // expired miss/degraded entry — try again
+		delete(s.iconCache, key) // expired miss/degraded entry — try again
 	}
 	s.iconMu.Unlock()
 	b, degraded, err := s.fileIcon(path)
@@ -249,32 +263,38 @@ func (s *Server) iconFor(path string) []byte {
 	if s.iconCache == nil {
 		s.iconCache = map[string]iconEntry{}
 	}
-	s.iconCache[path] = iconEntry{png: b, at: time.Now(), degraded: degraded}
+	if len(s.iconCache) > 2000 { // bound memory over a long session
+		s.iconCache = map[string]iconEntry{}
+	}
+	s.iconCache[key] = iconEntry{png: b, at: time.Now(), degraded: degraded}
 	s.iconMu.Unlock()
-	return b
+	return b, degraded
 }
 
 // probeCache memoizes yt-dlp probe results so the browser overlay can prefetch
 // a video's formats the moment its download button appears and then open the
 // menu instantly. Concurrent callers for the same URL share one yt-dlp run
 // (singleflight); the run uses a background context so a client that navigates
-// away mid-prefetch still warms the cache for the next visitor.
+// away mid-prefetch still warms the cache for the next visitor. Entries are
+// keyed by URL + Referer, since an embedded player may only answer with the
+// right page as Referer.
 type probeCache struct {
 	mu      sync.Mutex
 	entries map[string]*probeEntry
 	okTTL   time.Duration
 	errTTL  time.Duration
-	probe   func(context.Context, string) (*ytdlp.ProbeResult, error)
+	probe   func(context.Context, string, ytdlp.Opts) (*ytdlp.ProbeResult, error)
 }
 
 type probeEntry struct {
+	url  string
 	done chan struct{}
 	res  *ytdlp.ProbeResult
 	err  error
 	at   time.Time // when res/err were stored (zero while in flight)
 }
 
-func newProbeCache(probe func(context.Context, string) (*ytdlp.ProbeResult, error)) *probeCache {
+func newProbeCache(probe func(context.Context, string, ytdlp.Opts) (*ytdlp.ProbeResult, error)) *probeCache {
 	return &probeCache{
 		entries: make(map[string]*probeEntry),
 		okTTL:   10 * time.Minute, // probe yields stable metadata; URLs re-resolve at download time
@@ -285,9 +305,10 @@ func newProbeCache(probe func(context.Context, string) (*ytdlp.ProbeResult, erro
 
 // get returns a cached or freshly-probed result for url, deduping concurrent
 // callers. waitCtx bounds only the caller's wait, never the probe itself.
-func (c *probeCache) get(waitCtx context.Context, url string) (*ytdlp.ProbeResult, error) {
+func (c *probeCache) get(waitCtx context.Context, url string, o ytdlp.Opts) (*ytdlp.ProbeResult, error) {
+	key := url + "\x00" + o.Referer
 	c.mu.Lock()
-	if e := c.entries[url]; e != nil && e.fresh(c.okTTL, c.errTTL) {
+	if e := c.entries[key]; e != nil && e.fresh(c.okTTL, c.errTTL) {
 		c.mu.Unlock()
 		return e.wait(waitCtx)
 	}
@@ -298,14 +319,14 @@ func (c *probeCache) get(waitCtx context.Context, url string) (*ytdlp.ProbeResul
 			}
 		}
 	}
-	e := &probeEntry{done: make(chan struct{})}
-	c.entries[url] = e
+	e := &probeEntry{url: url, done: make(chan struct{})}
+	c.entries[key] = e
 	c.mu.Unlock()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		res, err := c.probe(ctx, url)
+		res, err := c.probe(ctx, url, o)
 		c.mu.Lock()
 		e.res, e.err, e.at = res, err, time.Now()
 		c.mu.Unlock()
@@ -323,7 +344,7 @@ func (c *probeCache) forget(pred func(url string) bool) {
 	for k, e := range c.entries {
 		select {
 		case <-e.done: // only evict finished entries; leave in-flight singleflights alone
-			if pred(k) {
+			if pred(e.url) {
 				delete(c.entries, k)
 			}
 		default:
@@ -420,6 +441,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/apply", s.handleUpdateApply)
 	mux.HandleFunc("GET /api/update/status", s.handleUpdateStatus)
 	mux.HandleFunc("GET /api/probe", s.handleProbe)
+	mux.HandleFunc("GET /api/inspect", s.handleInspect)
 	mux.HandleFunc("POST /api/cookies", s.handleCookies)
 	mux.HandleFunc("POST /api/video", s.handleVideo)
 	mux.HandleFunc("GET /api/playlist", s.handlePlaylistInfo)
@@ -449,6 +471,43 @@ func (s *Server) handlePromptsPoll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"prompts": s.drainPrompts()})
 }
 
+// browserContext is the optional page context a caller (the browser extension,
+// the New Download dialog) attaches so the download's requests look like the
+// page's own: many video hosts refuse requests without the right Referer or
+// the site's cookies.
+type browserContext struct {
+	Referer string            `json:"referer,omitempty"` // page the link / video was found on
+	PageURL string            `json:"pageUrl,omitempty"` // alias of referer
+	Headers map[string]string `json:"headers,omitempty"` // extra request headers (Origin, Authorization, …)
+	Cookies string            `json:"cookies,omitempty"` // "a=1; b=2" for the file's site
+	Ctx     string            `json:"ctx,omitempty"`     // token from /api/prompt (dialog round-trip)
+}
+
+// resolveContext merges a stored prompt context with explicit fields.
+func (s *Server) resolveContext(bc browserContext) (referer string, headers map[string]string) {
+	headers = map[string]string{}
+	if bc.Ctx != "" {
+		if rc, ok := s.ctxs.get(bc.Ctx); ok {
+			referer = rc.referer
+			for k, v := range rc.headers {
+				headers[k] = v
+			}
+		}
+	}
+	if bc.Referer != "" {
+		referer = bc.Referer
+	} else if bc.PageURL != "" && referer == "" {
+		referer = bc.PageURL
+	}
+	for k, v := range bc.Headers {
+		headers[k] = v
+	}
+	if c := strings.TrimSpace(bc.Cookies); c != "" {
+		headers["Cookie"] = c
+	}
+	return referer, engine.CleanHeaders(headers)
+}
+
 type createRequest struct {
 	URL         string `json:"url"`
 	FileName    string `json:"fileName,omitempty"`
@@ -458,6 +517,8 @@ type createRequest struct {
 	ScheduleAt  int64  `json:"scheduleAt,omitempty"`  // epoch ms; >0 holds the task until then
 	Later       bool   `json:"later,omitempty"`       // hold in the "Download Later" queue (start manually)
 	Description string `json:"description,omitempty"` // user note (New Download dialog)
+	Title       string `json:"title,omitempty"`       // naming hint (page/video title) for generic server names
+	browserContext
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -470,14 +531,15 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if dir == "" && req.Category != "" {
 		dir = s.eng.CategoryDir(req.Category)
 	}
-	view, err := s.eng.Add(req.URL, req.FileName, req.Segments, dir, epochMillis(req.ScheduleAt), req.Later)
+	referer, headers := s.resolveContext(req.browserContext)
+	view, err := s.eng.AddWithOptions(req.URL, engine.AddOptions{
+		FileName: req.FileName, Segments: req.Segments, Dir: dir,
+		ScheduledAt: epochMillis(req.ScheduleAt), Later: req.Later,
+		Referer: referer, Headers: headers, Title: req.Title, Description: req.Description,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if d := strings.TrimSpace(req.Description); d != "" {
-		s.eng.SetDescription(view.ID, d)
-		view.Description = d
 	}
 	writeJSON(w, http.StatusCreated, view)
 }
@@ -841,14 +903,62 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing url")
 		return
 	}
+	referer, headers := s.resolveContext(browserContext{Referer: r.URL.Query().Get("referer"), Ctx: r.URL.Query().Get("ctx")})
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	res, err := s.probes.get(ctx, u)
+	res, err := s.probes.get(ctx, u, ytdlp.Opts{UserAgent: s.eng.UserAgent(), Referer: referer, Headers: headers})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// inspectResponse is GET /api/inspect's answer.
+type inspectResponse struct {
+	engine.InspectResult
+	Error      string             `json:"error,omitempty"`
+	Video      *ytdlp.ProbeResult `json:"video,omitempty"`      // formats, when the URL is a video page / DASH
+	VideoError string             `json:"videoError,omitempty"` // why yt-dlp found no video
+	Ytdlp      bool               `json:"ytdlp"`
+}
+
+// handleInspect runs the download probe server-side for the New Download
+// dialog: real file name, size and kind (file / stream / page). Browsers can't
+// do this themselves — a cross-origin HEAD from the dialog is blocked by CORS
+// on nearly every site, which is why it used to show "unknown" and the raw URL
+// name. For a web page or DASH manifest it also asks yt-dlp for the video's
+// title and qualities. Errors come back as 200 + "error" for the dialog to show.
+func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	u := strings.TrimSpace(q.Get("url"))
+	if u == "" {
+		writeError(w, http.StatusBadRequest, "missing url")
+		return
+	}
+	referer, headers := s.resolveContext(browserContext{Referer: q.Get("referer"), Ctx: q.Get("ctx")})
+	out := inspectResponse{Ytdlp: ytdlp.Available()}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	res, err := s.eng.Inspect(ctx, u, referer, headers, q.Get("title"))
+	cancel()
+	if err != nil {
+		out.Error = err.Error()
+		out.Kind, out.Size = "unknown", -1
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	out.InspectResult = res
+	if (res.Kind == "page" || res.Kind == "dash") && out.Ytdlp {
+		vctx, vcancel := context.WithTimeout(r.Context(), 60*time.Second)
+		v, verr := s.probes.get(vctx, res.URL, ytdlp.Opts{UserAgent: s.eng.UserAgent(), Referer: referer, Headers: headers})
+		vcancel()
+		if verr != nil {
+			out.VideoError = verr.Error()
+		} else {
+			out.Video = v
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleCookies stores browser-supplied login cookies for a domain so yt-dlp can
@@ -890,6 +1000,8 @@ type videoRequest struct {
 	ScheduleAt  int64  `json:"scheduleAt,omitempty"`  // epoch ms; >0 holds the task until then
 	Later       bool   `json:"later,omitempty"`       // hold in the "Download Later" queue
 	Description string `json:"description,omitempty"` // user note (New Download dialog)
+	Size        int64  `json:"size,omitempty"`        // estimated bytes from the probe (shown until real totals arrive)
+	browserContext
 }
 
 // handleVideo queues a yt-dlp download chosen in the overlay.
@@ -907,7 +1019,12 @@ func (s *Server) handleVideo(w http.ResponseWriter, r *http.Request) {
 		}
 		dir = s.eng.CategoryDir(cat)
 	}
-	view, err := s.eng.AddVideo(req.URL, req.Title, req.Selector, req.Ext, dir, req.Audio, epochMillis(req.ScheduleAt), req.Later)
+	referer, headers := s.resolveContext(req.browserContext)
+	view, err := s.eng.AddVideoWithOptions(req.URL, engine.VideoOptions{
+		Title: req.Title, Selector: req.Selector, Ext: req.Ext, Dir: dir, Audio: req.Audio,
+		ScheduledAt: epochMillis(req.ScheduleAt), Later: req.Later,
+		Referer: referer, Headers: headers, SizeHint: req.Size,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -930,7 +1047,7 @@ func (s *Server) handlePlaylistInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	pl, err := ytdlp.ProbePlaylist(ctx, u, s.eng.UserAgent())
+	pl, err := ytdlp.ProbePlaylist(ctx, u, ytdlp.Opts{UserAgent: s.eng.UserAgent()})
 	if err != nil || pl == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"isPlaylist": false})
 		return
@@ -961,7 +1078,7 @@ func (s *Server) handlePlaylistDownload(w http.ResponseWriter, r *http.Request) 
 	if len(entries) == 0 { // no explicit selection — enumerate the whole playlist
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		pl, err := ytdlp.ProbePlaylist(ctx, req.URL, s.eng.UserAgent())
+		pl, err := ytdlp.ProbePlaylist(ctx, req.URL, ytdlp.Opts{UserAgent: s.eng.UserAgent()})
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -1125,7 +1242,8 @@ type promptRequest struct {
 	Selector string `json:"selector,omitempty"` // yt-dlp format selector
 	Ext      string `json:"ext,omitempty"`      // expected container (mp4 / mp3)
 	Audio    bool   `json:"audio,omitempty"`    // audio-only
-	Title    string `json:"title,omitempty"`
+	Title    string `json:"title,omitempty"`    // video title / naming hint (page title)
+	browserContext
 }
 
 // handlePrompt opens the native "New Download" window for url (GUI mode). The
@@ -1150,15 +1268,24 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	if req.Name != "" {
 		q.Set("name", req.Name)
 	}
+	if req.Title != "" {
+		q.Set("title", req.Title)
+	}
+	// The page context rides along as a short-lived server-side token, not in
+	// the dialog URL: that URL becomes a command-line argument of the popup
+	// process, where cookies would be visible to other programs.
+	if referer, headers := s.resolveContext(req.browserContext); referer != "" || len(headers) > 0 {
+		q.Set("ctx", s.ctxs.put(referer, headers))
+		if referer != "" {
+			q.Set("referer", referer)
+		}
+	}
 	if req.Video { // carry the chosen yt-dlp format through to the dialog
 		q.Set("video", "1")
 		q.Set("selector", req.Selector)
 		q.Set("vext", req.Ext)
 		if req.Audio {
 			q.Set("audio", "1")
-		}
-		if req.Title != "" {
-			q.Set("title", req.Title)
 		}
 	}
 	if s.dialog != nil { // native window (walk/webview)

@@ -32,6 +32,8 @@ var (
 
 	procSHGetFileInfo = shell32.NewProc("SHGetFileInfoW")
 
+	procPrivateExtractIcons = user32.NewProc("PrivateExtractIconsW")
+
 	procGetIconInfo = user32.NewProc("GetIconInfo")
 	procDestroyIcon = user32.NewProc("DestroyIcon")
 	procGetDC       = user32.NewProc("GetDC")
@@ -111,7 +113,14 @@ func FileIconPNGEx(path string) (png []byte, degraded bool, err error) {
 		defer procCoUninitialize.Call()
 	}
 
-	hIcon := shellIcon(path, false)
+	// Files that carry their own icon (an .exe's artwork) are read straight from
+	// the file. The shell's icon cache is keyed by PATH, so after a different
+	// program was downloaded to the same path (or replaced it) SHGetFileInfo can
+	// keep returning the previous program's icon.
+	hIcon := embeddedIcon(path)
+	if hIcon == 0 {
+		hIcon = shellIcon(path, false)
+	}
 	if hIcon == 0 {
 		// Real-file lookup can fail transiently (AV still scanning a fresh
 		// download, file moved): fall back to the extension's associated icon
@@ -127,6 +136,34 @@ func FileIconPNGEx(path string) (png []byte, degraded bool, err error) {
 	defer procDestroyIcon.Call(hIcon)
 	b, err := iconToPNG(hIcon)
 	return b, degraded, err
+}
+
+// selfIconExts are file types whose icon lives inside the file itself.
+var selfIconExts = map[string]bool{".exe": true, ".dll": true, ".ico": true, ".cpl": true, ".scr": true, ".ocx": true}
+
+// embeddedIcon extracts the first 32px icon resource directly from a file that
+// carries its own icon; 0 when the type doesn't, the file is missing, or it
+// has no icon resource (the shell's generic icon is the right answer then).
+func embeddedIcon(path string) uintptr {
+	path = filepath.Clean(path)
+	if !selfIconExts[strings.ToLower(filepath.Ext(path))] {
+		return 0
+	}
+	if _, err := os.Stat(path); err != nil {
+		return 0
+	}
+	p, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return 0
+	}
+	var hIcon uintptr
+	var id uint32
+	n, _, _ := procPrivateExtractIcons.Call(uintptr(unsafe.Pointer(p)), 0, 32, 32,
+		uintptr(unsafe.Pointer(&hIcon)), uintptr(unsafe.Pointer(&id)), 1, 0)
+	if r := uint32(n); r == 0 || r == 0xFFFFFFFF { // UINT result: none / file not found
+		return 0
+	}
+	return hIcon
 }
 
 // shellIcon fetches the 32px shell icon handle. byExtOnly skips the file on

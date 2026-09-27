@@ -534,6 +534,7 @@ func RunMain(serverURL, dataDir string, onClose func()) error {
 	// only once the page has painted — so it appears once, in place, fully drawn.
 	hwnd := uintptr(w.Window())
 	setDarkTitleBar(hwnd) // dark caption to match the app's dark chrome
+	applyAppIcon(hwnd)    // go-webview2 leaves its windows without an icon
 	// Re-cloak on close (every path, incl. the native X) so the window never
 	// flashes white as it tears down — mirror of the create-time cloak.
 	procSetWindowSubclass.Call(hwnd, closeCloakSubclass, 1, 0)
@@ -660,6 +661,7 @@ func runPopup(title string, logW, logH int, webviewData, geomDir, nav, trackID s
 	// page paints (or the safety timeout fires) so it appears once, fully drawn.
 	hwnd := uintptr(w.Window())
 	setDarkTitleBar(hwnd) // dark caption to match the app's dark chrome
+	applyAppIcon(hwnd)    // D BOX's icon, not a blank/generic one, on every popup
 	// Re-cloak on close (every path, incl. the native X) so the window never
 	// flashes white as it tears down — mirror of the create-time cloak.
 	procSetWindowSubclass.Call(hwnd, closeCloakSubclass, 1, 0)

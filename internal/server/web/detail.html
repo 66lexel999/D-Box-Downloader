@@ -190,7 +190,7 @@ async function pollClose(){ try { const r = await fetch("/api/popups/"+id+"/clos
 function infoFor(t, seg){
   const len = seg.end - seg.start + 1;
   if (seg.end >= 0 && seg.done >= len) return ['Complete','info-recv'];
-  if (t.status === 'downloading') return ['Receiving data…','info-recv'];
+  if (t.status === 'downloading') return [t.note || 'Receiving data…','info-recv'];
   if (t.status === 'paused') return ['Paused','info-idle'];
   if (t.status === 'failed') return ['Disconnect.','info-err'];
   if (t.status === 'queued') return ['Waiting…','info-idle'];
@@ -230,7 +230,8 @@ async function tick(){
   $("url").textContent = t.url; $("url").title = t.url;
   $("status").textContent = ({downloading:"Receiving data…",queued:"Waiting for a slot…",paused:"Paused",
     completed:"Complete",failed:"Error: "+(t.error||"failed")})[t.status] || t.status;
-  $("size").textContent = t.size>0 ? humanBytes(t.size) : "unknown";
+  $("size").textContent = t.size>0 ? ((t.sizeEstimated && t.status!=='completed' ? "~" : "") + humanBytes(t.size))
+    : (t.live ? "live stream" : "unknown");
   $("downloaded").textContent = humanBytes(t.downloaded) + (t.size>0 ? `  ( ${pct.toFixed(2)} % )` : "");
   $("rate").textContent = t.status==='downloading' ? humanBytes(t.speed)+"/sec" : "—";
   const rate = (v) => v>0 ? humanBytes(v)+"/s" : "—";

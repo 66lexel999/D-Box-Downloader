@@ -88,24 +88,30 @@ func (e *Engine) downloadSegment(ctx context.Context, t *Task, seg *Segment, f *
 	}
 }
 
-// streamRanged resumes the segment at Start+Done and copies until End.
+// streamRanged resumes the segment at Start+Done and copies until End. A
+// segment with End < 0 (server honors ranges but never said the total size)
+// is fetched open-ended ("bytes=N-") until the server closes the stream.
 func (e *Engine) streamRanged(ctx context.Context, t *Task, seg *Segment, f *os.File) error {
 	cur := seg.Start + seg.Done()
-	if cur > seg.End {
+	open := seg.End < 0
+	if !open && cur > seg.End {
 		return nil // already complete
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
+	req, err := e.newRequest(ctx, http.MethodGet, t.URL, t.reqInfo())
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", e.cfg.UserAgent)
-	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", cur, seg.End))
+	if open {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", cur))
+	} else {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", cur, seg.End))
+	}
 	// If-Range makes the server fall back to 200 when the entity changed,
 	// which we surface as errServerIgnoredRange instead of corrupting the file.
-	if t.ETag != "" {
-		req.Header.Set("If-Range", t.ETag)
+	// Only STRONG validators qualify: a weak ETag in If-Range always mismatches.
+	if et := strongETag(t.ETag); et != "" {
+		req.Header.Set("If-Range", et)
 	} else if t.LastModified != "" {
 		req.Header.Set("If-Range", t.LastModified)
 	}
@@ -119,7 +125,16 @@ func (e *Engine) streamRanged(ctx context.Context, t *Task, seg *Segment, f *os.
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
 	case http.StatusOK:
-		return errServerIgnoredRange
+		// At offset 0 with no validator sent, a full-body reply is exactly the
+		// bytes we asked for. With If-Range it means the file changed.
+		if cur != 0 || req.Header.Get("If-Range") != "" {
+			return errServerIgnoredRange
+		}
+	case http.StatusRequestedRangeNotSatisfiable:
+		if open && cur > 0 {
+			return nil // asked past the end of an unknown-size file: it's complete
+		}
+		return fmt.Errorf("unexpected status %s", resp.Status)
 	default:
 		return fmt.Errorf("unexpected status %s", resp.Status)
 	}
@@ -129,8 +144,10 @@ func (e *Engine) streamRanged(ctx context.Context, t *Task, seg *Segment, f *os.
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			// Clamp anything past our segment end (defensive against sloppy servers).
-			if over := cur + int64(n) - 1 - seg.End; over > 0 {
-				n -= int(over)
+			if !open {
+				if over := cur + int64(n) - 1 - seg.End; over > 0 {
+					n -= int(over)
+				}
 			}
 			if n > 0 {
 				if err := e.limiter.Take(ctx, n); err != nil {
@@ -142,13 +159,13 @@ func (e *Engine) streamRanged(ctx context.Context, t *Task, seg *Segment, f *os.
 				cur += int64(n)
 				seg.SetDone(cur - seg.Start)
 			}
-			if cur > seg.End {
+			if !open && cur > seg.End {
 				return nil
 			}
 		}
 		if rerr != nil {
 			if rerr == io.EOF {
-				if cur <= seg.End {
+				if !open && cur <= seg.End {
 					return fmt.Errorf("connection closed early at byte %d of %d", cur, seg.End+1)
 				}
 				return nil
@@ -166,19 +183,17 @@ func (e *Engine) streamWhole(ctx context.Context, t *Task, seg *Segment, f *os.F
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
+	req, err := e.newRequest(ctx, http.MethodGet, t.URL, t.reqInfo())
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", e.cfg.UserAgent)
-	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("unexpected status %s", resp.Status)
 	}
 

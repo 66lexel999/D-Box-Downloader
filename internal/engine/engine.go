@@ -106,6 +106,7 @@ func (e *Engine) notifyCompleted(id string) {
 func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Engine {
 	ytdlp.SetSearchDirs(cfg.DownloadDir)                       // also finds tools in <dir>/Programs/...
 	ytdlp.SetCookiesDir(filepath.Join(cfg.DataDir, "cookies")) // browser-supplied login cookies (IG etc.)
+	ytdlp.SetToolsDir(filepath.Join(cfg.DataDir, "tools"))     // on-demand ffmpeg lands here
 	e := &Engine{
 		cfg:        cfg,
 		store:      st,
@@ -419,22 +420,45 @@ func (e *Engine) samplerLoop(ctx context.Context) {
 	}
 }
 
+// AddOptions carries the optional parts of a new plain (HTTP) download.
+type AddOptions struct {
+	FileName    string    // user-chosen name; "" = resolve from the server
+	Segments    int       // connections; out of range = default
+	Dir         string    // destination folder; "" = default download dir
+	ScheduledAt time.Time // future time = hold until then
+	Later       bool      // hold in the Download Later queue
+	Referer     string    // page the link came from (sent as Referer)
+	Headers     map[string]string
+	Title       string // naming hint (page / video title) when the server's name is generic
+	Description string
+}
+
 // Add registers a new download and queues it. dir is the destination folder
 // (e.g. a category folder); empty means the default download directory. A
 // non-zero, future scheduledAt holds the task in StatusScheduled until that
 // time; later=true holds it in the manual "Download Later" queue (paused, the
 // user starts it). scheduledAt wins over later when both are set.
 func (e *Engine) Add(rawURL, fileName string, segments int, dir string, scheduledAt time.Time, later bool) (TaskView, error) {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return TaskView{}, fmt.Errorf("invalid URL: must be absolute http(s)")
+	return e.AddWithOptions(rawURL, AddOptions{FileName: fileName, Segments: segments, Dir: dir, ScheduledAt: scheduledAt, Later: later})
+}
+
+// AddWithOptions is Add with the full set of options (browser context, naming
+// hint, description). The URL may be a file, an HLS/DASH stream or a web page —
+// the probe decides how it is downloaded.
+func (e *Engine) AddWithOptions(rawURL string, o AddOptions) (TaskView, error) {
+	u, err := parseDownloadURL(rawURL)
+	if err != nil {
+		return TaskView{}, err
 	}
+	segments := o.Segments
 	if segments < 1 || segments > 32 {
 		segments = e.cfg.Segments
 	}
-	if fileName != "" {
-		fileName = SanitizeFileName(fileName)
+	fileName := ""
+	if strings.TrimSpace(o.FileName) != "" {
+		fileName = SanitizeFileName(o.FileName)
 	}
+	dir := o.Dir
 	if strings.TrimSpace(dir) == "" {
 		dir = e.downloadDir()
 	}
@@ -448,9 +472,13 @@ func (e *Engine) Add(rawURL, fileName string, segments int, dir string, schedule
 		Status:       StatusQueued,
 		WantSegments: segments,
 		CreatedAt:    time.Now(),
+		Referer:      cleanReferer(o.Referer),
+		Headers:      CleanHeaders(o.Headers),
+		Title:        strings.TrimSpace(o.Title),
+		Description:  strings.TrimSpace(o.Description),
 	}
-	scheduled := setSchedule(t, scheduledAt)
-	if !scheduled && later {
+	scheduled := setSchedule(t, o.ScheduledAt)
+	if !scheduled && o.Later {
 		t.Status = StatusPaused
 		t.Later = true
 	}
@@ -469,8 +497,37 @@ func (e *Engine) Add(rawURL, fileName string, segments int, dir string, schedule
 	if queueNow {
 		e.poke()
 	}
-	e.log.Info("task added", "id", t.ID, "url", t.URL, "scheduled", scheduled, "later", t.Later)
+	e.log.Info("task added", "id", t.ID, "url", t.URL, "referer", t.Referer, "scheduled", scheduled, "later", t.Later)
 	return view, nil
+}
+
+// parseDownloadURL accepts an absolute http(s) URL. A bare "example.com/file"
+// (no scheme, as people often paste) is read as https.
+func parseDownloadURL(rawURL string) (*url.URL, error) {
+	raw := strings.TrimSpace(rawURL)
+	if raw != "" && !strings.Contains(raw, "://") && strings.Contains(raw, ".") && !strings.ContainsAny(raw, " \t") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("invalid URL: must be absolute http(s)")
+	}
+	u.Fragment = "" // never sent to the server; keeps names/dedup clean
+	return u, nil
+}
+
+// cleanReferer keeps a Referer only if it is an absolute http(s) URL.
+func cleanReferer(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	u, err := url.Parse(ref)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	u.Fragment = ""
+	return u.String()
 }
 
 // setSchedule marks t as scheduled when at is in the future, returning whether
@@ -486,29 +543,60 @@ func setSchedule(t *Task, at time.Time) bool {
 }
 
 // UserAgent exposes the configured UA (for yt-dlp probes/downloads).
-func (e *Engine) UserAgent() string { return e.cfg.UserAgent }
+func (e *Engine) UserAgent() string { return e.userAgent() }
+
+// VideoOptions carries the optional parts of a yt-dlp (streaming-site) download.
+type VideoOptions struct {
+	Title       string
+	Selector    string // yt-dlp -f expression; "" = best video+audio
+	Ext         string // expected container; "" = mp4
+	Dir         string
+	Audio       bool // extract audio to mp3
+	ScheduledAt time.Time
+	Later       bool
+	Referer     string
+	Headers     map[string]string
+	SizeHint    int64 // estimated total bytes from the probe (0 = unknown)
+}
 
 // AddVideo registers a streaming-site download handled by yt-dlp. selector is a
 // yt-dlp -f expression; ext is the expected container; audio extracts to mp3. A
 // non-zero, future scheduledAt holds it in StatusScheduled until that time;
 // later=true holds it in the manual "Download Later" queue.
 func (e *Engine) AddVideo(rawURL, title, selector, ext, dir string, audio bool, scheduledAt time.Time, later bool) (TaskView, error) {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return TaskView{}, fmt.Errorf("invalid URL: must be absolute http(s)")
+	return e.AddVideoWithOptions(rawURL, VideoOptions{Title: title, Selector: selector, Ext: ext, Dir: dir,
+		Audio: audio, ScheduledAt: scheduledAt, Later: later})
+}
+
+// AddVideoWithOptions is AddVideo with the full option set.
+func (e *Engine) AddVideoWithOptions(rawURL string, o VideoOptions) (TaskView, error) {
+	u, err := parseDownloadURL(rawURL)
+	if err != nil {
+		return TaskView{}, err
 	}
 	if !ytdlp.Available() {
 		return TaskView{}, ytdlp.ErrNotInstalled
 	}
-	if strings.TrimSpace(title) == "" {
-		title = "video-" + newID()
+	referer := cleanReferer(o.Referer)
+	title := cleanTitle(o.Title)
+	if title == "" {
+		title = streamBaseName("", u.String(), referer)
 	}
+	ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(o.Ext), "."))
 	if ext == "" {
 		ext = "mp4"
+		if o.Audio {
+			ext = "mp3"
+		}
 	}
+	selector := o.Selector
 	if selector == "" {
 		selector = "bv*+ba/b"
+		if o.Audio {
+			selector = "ba/b"
+		}
 	}
+	dir := o.Dir
 	if strings.TrimSpace(dir) == "" {
 		dir = e.downloadDir()
 	}
@@ -525,11 +613,17 @@ func (e *Engine) AddVideo(rawURL, title, selector, ext, dir string, audio bool, 
 		Kind:      "ytdlp",
 		Selector:  selector,
 		Title:     title,
-		Audio:     audio,
+		Audio:     o.Audio,
+		Referer:   referer,
+		Headers:   CleanHeaders(o.Headers),
 		Segments:  []*Segment{{Start: 0, End: -1}}, // one synthetic segment for the UI
 	}
-	scheduled := setSchedule(t, scheduledAt)
-	if !scheduled && later {
+	if o.SizeHint > 0 {
+		t.Size, t.SizeEstimated = o.SizeHint, true
+		t.Segments[0].End = o.SizeHint - 1
+	}
+	scheduled := setSchedule(t, o.ScheduledAt)
+	if !scheduled && o.Later {
 		t.Status = StatusPaused
 		t.Later = true
 	}
@@ -938,6 +1032,7 @@ func (e *Engine) Delete(id string, removeFile bool) error {
 
 	os.Remove(e.partPath(t))
 	e.removeBurstTmp(t)
+	e.removeHLSWork(t)
 	if removeFile && t.FinalPath != "" {
 		os.Remove(t.FinalPath)
 	}
@@ -1137,56 +1232,142 @@ func (e *Engine) runTask(ctx context.Context, t *Task) {
 	}()
 	e.log.Info("task starting", "id", t.ID, "url", t.URL)
 
-	if t.Kind == "ytdlp" {
+	switch t.Kind {
+	case "ytdlp":
 		e.runYtdlp(ctx, t)
-		return
+	case "hls":
+		e.runHLS(ctx, t)
+	default:
+		e.runHTTP(ctx, t)
 	}
+}
 
-	// Probe on first run (or after a pre-probe failure).
-	if !t.Probed {
-		pr, err := e.probe(ctx, t.URL)
-		if err != nil {
-			e.finishTask(t, fmt.Errorf("probe: %w", err))
+// runHTTP downloads a plain file with the segmented engine. On first run it
+// probes the URL, and a probe can re-route the task: an HLS playlist goes to the
+// native HLS downloader, a DASH manifest or a web page to yt-dlp.
+func (e *Engine) runHTTP(ctx context.Context, t *Task) {
+	for attempt := 0; ; attempt++ {
+		if !t.Probed {
+			e.setNote(t, "Connecting…")
+			pr, err := e.probe(ctx, t.URL, t.reqInfo(), t.Title)
+			if err != nil {
+				if ctx.Err() != nil {
+					e.finishInterrupted(t)
+					return
+				}
+				e.finishTask(t, fmt.Errorf("probe: %w", err))
+				return
+			}
+			switch pr.Kind {
+			case kindHLS:
+				e.adoptStream(t, pr)
+				e.log.Info("probed: HLS stream", "id", t.ID, "file", t.FileName)
+				e.runHLS(ctx, t)
+				return
+			case kindDASH, kindPage:
+				if err := e.convertToVideo(ctx, t, pr); err != nil {
+					if ctx.Err() != nil {
+						e.finishInterrupted(t)
+						return
+					}
+					e.finishTask(t, err)
+					return
+				}
+				e.log.Info("probed: handing to yt-dlp", "id", t.ID, "kind", pr.Kind, "file", t.FileName)
+				e.runYtdlp(ctx, t)
+				return
+			}
+			e.mu.Lock()
+			t.Size = pr.Size
+			t.Ranged = pr.Ranged
+			t.ETag = pr.ETag
+			t.LastModified = pr.LastModified
+			t.ContentType = pr.ContentType
+			t.Referer = pr.Referer
+			if attempt > 0 {
+				// A restart after the server stopped honoring If-Range: don't send
+				// the validators again.
+				t.ETag, t.LastModified = "", ""
+			}
+			if attempt > 1 {
+				t.Ranged = false // ranges keep failing: one plain stream
+			}
+			if t.FileName == "" {
+				t.FileName = pr.FileName
+			} else {
+				t.FileName = fixUserExt(t.FileName, pr.FileName)
+			}
+			t.Segments = planSegments(t.Size, t.Ranged, t.WantSegments, e.minSegmentSize())
+			t.Probed = true
+			t.note = ""
+			e.saveLocked()
+			e.mu.Unlock()
+			e.log.Info("probed", "id", t.ID, "size", t.Size, "ranged", t.Ranged, "segments", len(t.Segments), "file", t.FileName)
+		}
+
+		err := e.transferHTTP(ctx, t)
+		switch {
+		case ctx.Err() != nil: // pause / delete / shutdown
+			e.finishInterrupted(t)
 			return
-		}
-		e.mu.Lock()
-		t.Size = pr.Size
-		t.Ranged = pr.Ranged
-		t.ETag = pr.ETag
-		t.LastModified = pr.LastModified
-		t.ContentType = pr.ContentType
-		if t.FileName == "" {
-			t.FileName = pr.FileName
-		}
-		if t.FileName == "" {
-			t.FileName = "download-" + t.ID
-		}
-		t.Segments = planSegments(t.Size, t.Ranged, t.WantSegments, e.cfg.MinSegmentSize)
-		t.Probed = true
-		e.saveLocked()
-		e.mu.Unlock()
-		e.log.Info("probed", "id", t.ID, "size", t.Size, "ranged", t.Ranged, "segments", len(t.Segments), "file", t.FileName)
-	}
-
-	if err := os.MkdirAll(t.Dir, 0o755); err != nil {
-		e.finishTask(t, err)
-		return
-	}
-	f, err := os.OpenFile(e.partPath(t), os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		e.finishTask(t, err)
-		return
-	}
-	if t.Ranged && t.Size > 0 {
-		if err := f.Truncate(t.Size); err != nil { // preallocate
-			f.Close()
+		case err == nil:
+			e.finalizeHTTP(t)
+			return
+		case errors.Is(err, errServerIgnoredRange) && attempt < 2:
+			// The server sent the whole file instead of a range: the file changed
+			// (or its validators are unreliable). Start over from a fresh probe
+			// rather than failing forever on every resume.
+			e.log.Info("server ignored range — restarting download", "id", t.ID, "attempt", attempt+1)
+			os.Remove(e.partPath(t))
+			e.mu.Lock()
+			t.Probed = false
+			e.saveLocked()
+			e.mu.Unlock()
+			continue
+		default:
 			e.finishTask(t, err)
 			return
 		}
 	}
+}
 
-	// One worker per incomplete segment.
+// fixUserExt gives a user-chosen name the detected extension when it has none
+// (the New Download box pre-fills bare URL names like "videoplayback").
+func fixUserExt(user, resolved string) string {
+	if _, ext := splitExt(user); meaningfulExt(ext) {
+		return user
+	}
+	if _, ext := splitExt(resolved); meaningfulExt(ext) {
+		return SanitizeFileName(user + "." + ext)
+	}
+	return user
+}
+
+func (e *Engine) minSegmentSize() int64 {
+	if e.cfg != nil && e.cfg.MinSegmentSize > 0 {
+		return e.cfg.MinSegmentSize
+	}
+	return 512 << 10
+}
+
+// transferHTTP runs one worker per incomplete segment into the .part file.
+func (e *Engine) transferHTTP(ctx context.Context, t *Task) error {
+	if err := os.MkdirAll(t.Dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(e.partPath(t), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if t.Ranged && t.Size > 0 {
+		if err := f.Truncate(t.Size); err != nil { // preallocate
+			return err
+		}
+	}
+
 	wctx, wcancel := context.WithCancel(ctx)
+	defer wcancel()
 	var (
 		wg       sync.WaitGroup
 		errMu    sync.Mutex
@@ -1210,28 +1391,18 @@ func (e *Engine) runTask(ctx context.Context, t *Task) {
 		}(seg)
 	}
 	wg.Wait()
-	wcancel()
-
-	// Interrupted (pause/delete/shutdown)?
 	if ctx.Err() != nil {
-		f.Close()
-		e.finishInterrupted(t)
-		return
+		return ctx.Err()
 	}
 	if firstErr != nil {
-		f.Close()
-		e.finishTask(t, firstErr)
-		return
+		return firstErr
 	}
+	return f.Sync()
+}
 
-	// Success: flush, rename .part to a collision-free final name.
-	if err := f.Sync(); err != nil {
-		f.Close()
-		e.finishTask(t, err)
-		return
-	}
-	f.Close()
-
+// finalizeHTTP renames the finished .part file to a collision-free final name
+// and marks the task completed.
+func (e *Engine) finalizeHTTP(t *Task) {
 	finalPath := uniquePath(filepath.Join(t.Dir, t.FileName))
 	if err := os.Rename(e.partPath(t), finalPath); err != nil {
 		e.finishTask(t, fmt.Errorf("finalize: %w", err))
@@ -1247,6 +1418,8 @@ func (e *Engine) runTask(ctx context.Context, t *Task) {
 	t.CompletedAt = &now
 	t.FinalPath = finalPath
 	t.FileName = filepath.Base(finalPath)
+	t.SizeEstimated = false
+	t.note = ""
 	t.cancel = nil
 	e.running--
 	e.completionsSinceArm++ // a real completion (not a pause/fail) counts toward auto-shutdown
@@ -1255,6 +1428,13 @@ func (e *Engine) runTask(ctx context.Context, t *Task) {
 	e.poke()
 	e.log.Info("task completed", "id", t.ID, "file", finalPath)
 	e.notifyCompleted(t.ID)
+}
+
+// setNote sets the short status note the UI shows while a task works.
+func (e *Engine) setNote(t *Task, note string) {
+	e.mu.Lock()
+	t.note = note
+	e.mu.Unlock()
 }
 
 // splitLinesCR is a bufio.SplitFunc that breaks on \r OR \n, so progress lines a
@@ -1280,10 +1460,39 @@ func splitLinesCR(data []byte, atEOF bool) (int, []byte, error) {
 // own aria2c path (IDM parity). Anything the fast path can't handle falls back
 // to runYtdlpNative (yt-dlp + aria2c), so behavior never regresses.
 func (e *Engine) runYtdlp(ctx context.Context, t *Task) {
+	e.ensureFFmpeg(ctx, t)
+	if ctx.Err() != nil {
+		e.finishInterrupted(t)
+		return
+	}
 	if e.runYtdlpBurst(ctx, t) {
 		return
 	}
 	e.runYtdlpNative(ctx, t)
+}
+
+// ytdlpOpts is the browser context a task hands to yt-dlp.
+func (e *Engine) ytdlpOpts(t *Task) ytdlp.Opts {
+	return ytdlp.Opts{UserAgent: e.userAgent(), Referer: t.Referer, Headers: t.Headers}
+}
+
+// ensureFFmpeg makes ffmpeg available for merging/converting, fetching it once
+// on first need. Best-effort: without it yt-dlp falls back to single-file
+// formats (see ytdlp.SelectorWithoutFFmpeg) and HLS captures stay .ts.
+func (e *Engine) ensureFFmpeg(ctx context.Context, t *Task) {
+	if ytdlp.HasFFmpeg() {
+		return
+	}
+	e.setNote(t, "Getting ffmpeg (one-time)…")
+	_, err := ytdlp.EnsureFFmpeg(ctx, func(done, total int64) {
+		if total > 0 {
+			e.setNote(t, fmt.Sprintf("Getting ffmpeg (one-time)… %d%%", done*100/total))
+		}
+	})
+	e.setNote(t, "")
+	if err != nil && ctx.Err() == nil {
+		e.log.Warn("ffmpeg unavailable — videos needing a merge fall back to single-file formats", "err", err)
+	}
 }
 
 // runYtdlpBurst is the fast video path. It returns true once it has driven the
@@ -1301,7 +1510,7 @@ func (e *Engine) runYtdlpBurst(ctx context.Context, t *Task) bool {
 	}
 
 	rctx, rcancel := context.WithTimeout(ctx, 90*time.Second)
-	urls, err := ytdlp.ResolveURLs(rctx, t.URL, t.Selector, e.cfg.UserAgent)
+	urls, err := ytdlp.ResolveURLs(rctx, t.URL, t.Selector, e.ytdlpOpts(t))
 	rcancel()
 	// Only handle the clean 1-stream (progressive) or 2-stream (video+audio)
 	// googlevideo case; anything else (errors, playlists, >2 streams, other
@@ -1319,7 +1528,7 @@ func (e *Engine) runYtdlpBurst(ctx context.Context, t *Task) bool {
 	var total int64
 	for _, u := range urls {
 		pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-		n, perr := e.burstProbeLen(pctx, u, e.cfg.UserAgent)
+		n, perr := e.burstProbeLen(pctx, u, e.userAgent())
 		pcancel()
 		if perr != nil || n <= 0 {
 			return false
@@ -1328,6 +1537,7 @@ func (e *Engine) runYtdlpBurst(ctx context.Context, t *Task) bool {
 	}
 	e.mu.Lock()
 	t.Size = total
+	t.SizeEstimated = false
 	t.Ranged = true // burst uses HTTP range requests, so this download resumes
 	if len(t.Segments) > 0 {
 		t.Segments[0].End = total - 1
@@ -1361,7 +1571,7 @@ func (e *Engine) runYtdlpBurst(ctx context.Context, t *Task) bool {
 	}
 	for i, u := range urls {
 		tmp[i] = filepath.Join(t.Dir, fmt.Sprintf("%s.%s.f%d.part", t.FileName, t.ID, i))
-		if ferr := e.burstFetch(ctx, u, tmp[i], e.cfg.UserAgent, onBytes); ferr != nil {
+		if ferr := e.burstFetch(ctx, u, tmp[i], e.userAgent(), onBytes); ferr != nil {
 			if ctx.Err() != nil { // paused / deleted / shutdown — keep partials so resume continues
 				e.finishInterrupted(t)
 				return true
@@ -1380,6 +1590,7 @@ func (e *Engine) runYtdlpBurst(ctx context.Context, t *Task) bool {
 		}
 		cleanup() // .part is now the final file; drop the .prog resume sidecar
 	} else {
+		e.setNote(t, "Merging…")
 		mctx, mcancel := context.WithTimeout(ctx, 5*time.Minute)
 		muxErr := ytdlp.MuxCmd(mctx, tmp[0], tmp[1], finalPath).Run()
 		mcancel()
@@ -1418,6 +1629,9 @@ func (e *Engine) completeTask(t *Task, finalPath string) {
 	t.CompletedAt = &now
 	t.FinalPath = finalPath
 	t.FileName = filepath.Base(finalPath)
+	t.SizeEstimated = false
+	t.Live = false
+	t.note = ""
 	t.cancel = nil
 	e.running--
 	e.completionsSinceArm++ // a real completion (not a pause/fail) counts toward auto-shutdown
@@ -1441,7 +1655,7 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 	}
 
 	outTmpl := filepath.Join(t.Dir, SanitizeFileName(t.Title)+".%(ext)s")
-	cmd := ytdlp.DownloadCmd(ctx, t.URL, t.Selector, outTmpl, e.cfg.UserAgent, t.Audio, e.cfg.Segments)
+	cmd := ytdlp.DownloadCmd(ctx, t.URL, t.Selector, outTmpl, e.ytdlpOpts(t), t.Audio, e.cfg.Segments)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		e.finishTask(t, err)
@@ -1461,23 +1675,46 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 		finalPath string
 		errTail   string
 		smu       sync.Mutex
+		// A video+audio format is fetched as separate streams, each reporting
+		// its own 0-100%. base carries the finished streams' bytes forward so
+		// the row's progress and size keep growing instead of jumping back.
+		base, curTotal int64
+		streams        int
 	)
 	applyProgress := func(p ytdlp.Progress) {
 		e.mu.Lock()
-		if p.Total > 0 {
-			t.Size = p.Total
-			t.Segments[0].End = p.Total - 1
-		}
-		if t.Size > 0 {
-			done := int64(p.Percent / 100 * float64(t.Size))
-			if done > t.Size {
-				done = t.Size
-			}
-			t.Segments[0].SetDone(done)
-		}
+		defer e.mu.Unlock()
 		if p.SpeedBPS > 0 {
 			t.speed = p.SpeedBPS
 		}
+		if p.Percent < 0 { // total unknown (live / chunked): show bytes received
+			if p.Downloaded > 0 {
+				t.Segments[0].SetDone(base + p.Downloaded)
+			}
+			return
+		}
+		if p.Total > 0 {
+			curTotal = p.Total
+			t.Size = base + p.Total
+			t.SizeEstimated = p.Estimated
+			t.Segments[0].End = t.Size - 1
+		}
+		if curTotal > 0 {
+			done := int64(p.Percent / 100 * float64(curTotal))
+			if done > curTotal {
+				done = curTotal
+			}
+			t.Segments[0].SetDone(base + done)
+		}
+	}
+	// newStream is called at each "[download] Destination:" line.
+	newStream := func() {
+		e.mu.Lock()
+		if streams > 0 {
+			base += curTotal
+			curTotal = 0
+		}
+		streams++
 		e.mu.Unlock()
 	}
 	// yt-dlp's own progress prints on stdout, but an external downloader (aria2c)
@@ -1497,10 +1734,20 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 				applyProgress(p)
 			} else if p, ok := ytdlp.ParseAria2cProgress(line); ok {
 				applyProgress(p)
+			} else if p, ok := ytdlp.ParseFFmpegProgress(line); ok {
+				applyProgress(p)
 			} else if d, ok := ytdlp.ParseDestination(line); ok {
 				smu.Lock()
 				finalPath = d
 				smu.Unlock()
+				switch {
+				case strings.HasPrefix(line, "[Merger]"):
+					e.setNote(t, "Merging…")
+				case strings.HasPrefix(line, "[ExtractAudio]"):
+					e.setNote(t, "Converting…")
+				default:
+					newStream()
+				}
 			} else if isErr {
 				smu.Lock()
 				errTail = line // keep the last real stderr line for the error message
@@ -1557,6 +1804,8 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 	t.CompletedAt = &now
 	t.FinalPath = finalPath
 	t.FileName = filepath.Base(finalPath)
+	t.SizeEstimated = false
+	t.note = ""
 	t.cancel = nil
 	e.running--
 	e.completionsSinceArm++ // a real completion (not a pause/fail) counts toward auto-shutdown
@@ -1604,6 +1853,7 @@ func (e *Engine) finishTask(t *Task, err error) {
 	e.mu.Lock()
 	t.Status = StatusFailed
 	t.Error = err.Error()
+	t.note = ""
 	t.cancel = nil
 	e.running--
 	e.saveLocked()
@@ -1617,6 +1867,7 @@ func (e *Engine) finishInterrupted(t *Task) {
 	e.mu.Lock()
 	intent := t.intent
 	t.intent = intentNone
+	t.note = ""
 	t.cancel = nil
 	e.running--
 
@@ -1626,6 +1877,7 @@ func (e *Engine) finishInterrupted(t *Task) {
 		e.mu.Unlock()
 		os.Remove(e.partPath(t))
 		e.removeBurstTmp(t)
+		e.removeHLSWork(t)
 		if t.deleteFile && t.FinalPath != "" {
 			os.Remove(t.FinalPath)
 		}
@@ -1637,10 +1889,11 @@ func (e *Engine) finishInterrupted(t *Task) {
 	default: // pause (or root context cancelled)
 		t.Status = StatusPaused
 	}
+	state := t.Status // read under the lock: a Resume may flip it right after
 	e.saveLocked()
 	e.mu.Unlock()
 	e.poke()
-	e.log.Info("task interrupted", "id", t.ID, "state", t.Status)
+	e.log.Info("task interrupted", "id", t.ID, "state", state)
 }
 
 func (e *Engine) partPath(t *Task) string {
@@ -1662,6 +1915,13 @@ func (e *Engine) removeBurstTmp(t *Task) {
 	}
 }
 
+// removeHLSWork deletes an HLS task's segment folder (no-op for other kinds).
+func (e *Engine) removeHLSWork(t *Task) {
+	if t.Kind == "hls" {
+		os.RemoveAll(e.hlsWorkDir(t))
+	}
+}
+
 // viewLocked snapshots a task for the API. Caller holds e.mu.
 func (e *Engine) viewLocked(t *Task) TaskView {
 	v := TaskView{
@@ -1674,6 +1934,10 @@ func (e *Engine) viewLocked(t *Task) TaskView {
 		Status:      t.Status,
 		Kind:        t.Kind,
 		Error:       t.Error,
+		Note:        t.note,
+		Referer:     t.Referer,
+		SizeEst:     t.SizeEstimated,
+		Live:        t.Live,
 		Downloaded:  t.downloaded(),
 		Speed:       t.speed,
 		SpeedMax:    t.speedMax,
@@ -1702,19 +1966,24 @@ func (e *Engine) viewLocked(t *Task) TaskView {
 	for _, s := range t.Segments {
 		v.Segments = append(v.Segments, SegmentView{Start: s.Start, End: s.End, Done: s.Done()})
 	}
-	if t.Size > 0 {
+	if t.Size > 0 && !t.Live {
 		v.Progress = float64(v.Downloaded) / float64(t.Size)
 		if v.Progress > 1 {
 			v.Progress = 1
 		}
-		if t.Status == StatusDownloading && v.Speed > 0 {
+		if t.Status == StatusDownloading && v.Speed > 0 && v.Downloaded < t.Size {
 			v.ETA = float64(t.Size-v.Downloaded) / v.Speed
 		}
 	}
 	if t.Status == StatusCompleted {
 		v.Progress = 1
 		v.FilePath = t.FinalPath
-		v.FileExists = fileExistsOnDisk(t.FinalPath)
+		if st, err := os.Stat(t.FinalPath); t.FinalPath != "" && err == nil && !st.IsDir() {
+			v.FileExists = true
+			// Changes whenever the file on disk is replaced, so the UI's icon URL
+			// (and the server's icon cache) never shows a previous file's icon.
+			v.FileVersion = fmt.Sprintf("%x-%x", st.ModTime().UnixNano(), st.Size())
+		}
 	}
 	return v
 }

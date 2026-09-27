@@ -33,6 +33,27 @@ stack collapsed for a local single-user app:
 - **Per-connection retries** with exponential backoff, budget resets on progress
 - **Live web UI** — per-segment progress bars, speed/ETA, SSE updates, pause /
   resume / cancel / open / show-in-folder
+- **Streams (HLS / .m3u8)** — native downloader: picks the best quality, adds
+  the separate audio track, decrypts AES-128, handles byte-range and fMP4
+  playlists, downloads segments in parallel and resumes after a pause. Live
+  streams are **recorded**; Pause stops and saves the recording. The result is
+  rewrapped to MP4 with ffmpeg (a playable .ts/fMP4 is kept without it)
+- **Web pages & DASH** — paste a page instead of a file and D BOX hands it to
+  yt-dlp, which finds the video (with its real title and an estimated size);
+  DASH (.mpd) manifests go the same way
+- **Real names and sizes** — names come from Content-Disposition (including
+  malformed / RFC 5987 / percent-encoded ones), pre-signed S3/GCS/Azure links
+  (`response-content-disposition=`, `rscd=`), the original link when a CDN
+  redirects to a hash, the page title, or the page the link came from; missing
+  extensions come from the Content-Type or the file's magic bytes. Sizes a
+  server hides are found via HEAD, and streams show an estimate (`~`)
+- **Hotlink-protected files** — requests replay the page's Referer, cookies and
+  headers (from the browser extension); when a server refuses anyway, the probe
+  retries without a Range header and with same-site Referers
+- **ffmpeg on demand** — the first video that needs merging or conversion
+  fetches ffmpeg once (yt-dlp's static build, ~190 MB) into
+  `%LOCALAPPDATA%\flowerX\tools`; without it yt-dlp picks single-file formats
+  so a video is never saved without sound
 
 ## Build & run
 
@@ -61,7 +82,10 @@ state in `%LOCALAPPDATA%\flowerX\tasks.json`.
 | Method | Path                    | Description                            |
 | ------ | ----------------------- | -------------------------------------- |
 | GET    | `/api/tasks`            | list tasks (newest first)              |
-| POST   | `/api/tasks`            | `{"url":"…","fileName":"…","segments":8}` |
+| POST   | `/api/tasks`            | `{"url":"…","fileName":"…","segments":8}` + page context (below) |
+| GET    | `/api/inspect?url=…`    | probe without downloading: `kind` (file/hls/dash/page/drm), `fileName`, `size`, `sizeEstimated`, `live`; video formats for pages |
+| POST   | `/api/prompt`           | open the New Download dialog for `{"url":"…"}` + page context |
+| POST   | `/api/video`            | yt-dlp download `{"url","title","selector","ext","audio"}` + page context |
 | GET    | `/api/tasks/{id}`       | one task                               |
 | POST   | `/api/tasks/{id}/pause` | pause (keeps segment progress)         |
 | POST   | `/api/tasks/{id}/resume`| resume / retry                         |
@@ -70,6 +94,24 @@ state in `%LOCALAPPDATA%\flowerX\tasks.json`.
 | GET    | `/api/tasks/{id}/file`  | stream the completed file              |
 | POST   | `/api/tasks/{id}/reveal`| select file in Explorer                |
 | GET    | `/api/events`           | SSE: full task snapshot every 500 ms   |
+
+### Page context (for the browser extension)
+
+`POST /api/tasks`, `/api/video` and `/api/prompt` accept optional fields that
+make D BOX's requests look like the page's own — many video hosts refuse
+downloads without them:
+
+| Field     | Meaning                                                        |
+| --------- | -------------------------------------------------------------- |
+| `referer` | the page the link / video was found on (`pageUrl` is an alias) |
+| `cookies` | `"a=1; b=2"` — the file site's cookies                         |
+| `headers` | extra request headers, e.g. `{"Origin":"https://…"}`           |
+| `title`   | the page / video title, used when the server's name is generic |
+
+`/api/prompt` keeps the cookies/headers server-side and passes the dialog a
+short-lived `ctx` token instead, so they never appear in a URL or command line.
+Cookies posted to `/api/cookies` are also applied to plain file downloads of
+that site.
 
 ## Layout
 

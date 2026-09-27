@@ -656,7 +656,9 @@ const catIconHTML = (name) => CAT_IMG[name] ? `<img class="catimg" src="${CAT_IM
 function rowIconHTML(t, cat) {
   if (CAT_IMG_ALWAYS.has(cat)) return `<img class="ic icimg" src="${CAT_IMG[cat]}" alt="">`;
   if (t.status === "completed" && t.filePath) {
-    return `<img class="ic icimg" src="/api/icon?path=${encodeURIComponent(t.filePath)}" alt="" onerror="iconFallback(this,'${cat}')">`;
+    // v= changes whenever the file on disk does, so a new download at the same
+    // path never reuses the previous file's cached icon.
+    return `<img class="ic icimg" src="/api/icon?path=${encodeURIComponent(t.filePath)}&v=${encodeURIComponent(t.fileVersion || "")}" alt="" onerror="iconFallback(this,'${cat}')">`;
   }
   if (CAT_IMG[cat]) return `<img class="ic icimg" src="${CAT_IMG[cat]}" alt="">`;
   return `<span class="ic">${catIcon(cat)}</span>`;
@@ -750,7 +752,10 @@ function statusText(t) {
   if (t.later && t.skip && held) return "⏭️ Skipped";
   if (t.later && held) return "🕑 Later";
   switch (t.status) {
-    case "downloading": return t.progress >= 0 ? (t.progress*100).toFixed(1) + "%" : "Receiving…";
+    case "downloading":
+      if (t.live) return t.note || "● Recording";
+      if (t.note) return t.note; // "Connecting…", "Merging…", "Getting ffmpeg… 40%"
+      return t.progress >= 0 ? (t.progress*100).toFixed(1) + "%" : "Receiving…";
     case "queued":      return "Queued";
     case "scheduled":   return t.scheduledAt ? "⏰ " + humanDate(t.scheduledAt) : "Scheduled";
     case "paused":      return t.progress >= 0 ? "Paused " + (t.progress*100).toFixed(0) + "%" : "Paused";
@@ -768,7 +773,9 @@ function progressFill(t) {
 }
 function rowHTML(t) {
   const cat = categoryOf(t);
-  const size = t.size > 0 ? humanBytes(t.size) : (t.status === "completed" ? humanBytes(t.downloaded) : "");
+  // "~" marks an estimate (streams); with no total at all, show what has arrived.
+  const size = t.size > 0 ? ((t.sizeEstimated && t.status !== "completed" ? "~" : "") + humanBytes(t.size))
+    : (t.status === "completed" || t.downloaded > 0 ? humanBytes(t.downloaded) : "");
   const eta = t.status === "downloading" ? humanETA(t.eta) : "";
   const q = t.status === "downloading" ? (t.segments || []).length : "";
   const sel = selectedIds.has(t.id) ? " selected" : "";
@@ -1780,7 +1787,8 @@ async function poll() {
     // never repaint: fileName, scheduledAt, dir, fileExists, later, description.
     const sig = list.map(t => t.id + ":" + t.status + ":" + t.size + ":" + t.downloaded + ":" + ((t.speed||0)|0)
       + ":" + (t.skip?1:0) + (t.later?1:0) + (t.fileExists?1:0) + ":" + (t.fileName||"") + ":" + (t.scheduledAt||"")
-      + ":" + (t.dir||"") + ":" + (t.description||"")).join("|");
+      + ":" + (t.dir||"") + ":" + (t.description||"") + ":" + (t.note||"") + ":" + (t.sizeEstimated?1:0) + (t.live?1:0)
+      + ":" + (t.fileVersion||"")).join("|");
     if (sig !== pollSig) { pollSig = sig; render(); }
   } catch {}
   // New Download prompts relayed from the browser extension (POST /api/prompt).

@@ -105,12 +105,20 @@ type Task struct {
 	FinalPath    string     `json:"finalPath,omitempty"`   // set once completed
 
 	// yt-dlp tasks (streaming-site video/audio via the external binary)
-	Kind     string `json:"kind,omitempty"`     // "" = http segmented; "ytdlp"
+	Kind     string `json:"kind,omitempty"`     // "" = http segmented; "ytdlp"; "hls" (native HLS stream)
 	Selector string `json:"selector,omitempty"` // yt-dlp -f selector
-	Title    string `json:"title,omitempty"`
+	Title    string `json:"title,omitempty"`    // video title (ytdlp) / naming hint (http, hls)
 	Audio    bool   `json:"audio,omitempty"`
 
+	// Browser context replayed on every request (see request.go).
+	Referer string            `json:"referer,omitempty"` // page the download came from
+	Headers map[string]string `json:"headers,omitempty"` // extra headers: Cookie, Authorization, Origin, …
+
+	SizeEstimated bool `json:"sizeEstimated,omitempty"` // Size is an estimate (streams) until the file is done
+	Live          bool `json:"live,omitempty"`          // a live HLS stream being recorded (Stop saves it)
+
 	// runtime
+	note       string // short status note for the UI ("Connecting…", "Merging…")
 	cancel     context.CancelFunc
 	intent     intent
 	deleteFile bool
@@ -153,6 +161,10 @@ type TaskView struct {
 	Status      Status        `json:"status"`
 	Kind        string        `json:"kind,omitempty"`
 	Error       string        `json:"error,omitempty"`
+	Note        string        `json:"note,omitempty"`          // live status note ("Merging…", "Recording")
+	Referer     string        `json:"referer,omitempty"`       // page the download came from
+	SizeEst     bool          `json:"sizeEstimated,omitempty"` // Size is an estimate
+	Live        bool          `json:"live,omitempty"`          // live stream recording
 	Downloaded  int64         `json:"downloaded"`
 	Speed       float64       `json:"speed"`    // bytes/sec (current, EMA)
 	SpeedAvg    float64       `json:"speedAvg"` // bytes/sec averaged over active time
@@ -169,4 +181,5 @@ type TaskView struct {
 	Description string        `json:"description,omitempty"`
 	FilePath    string        `json:"filePath,omitempty"`
 	FileExists  bool          `json:"fileExists"`
+	FileVersion string        `json:"fileVersion,omitempty"` // changes whenever the file on disk does (icon cache key)
 }
