@@ -1,3 +1,18 @@
+D BOX 1.2.0
+
+• A brand-new look: every window was redesigned — a sidebar with Downloads and
+  Categories sections, a big paste-a-link bar, a clean list with progress bars
+  and one-click actions (pause, resume, retry, show in folder), a live progress
+  ring with speed and time left, and search. Dark (default), Midnight and Light
+  themes under Menu → Appearance.
+• New icons everywhere: a new D BOX app icon and a crisp icon set for the
+  toolbar, menus, categories and dialogs (no more emoji that looked different
+  on every PC).
+• The New Download, download status and Download complete windows were
+  redesigned to match, and the completion window shows the file's real icon.
+• Browser extension 3.3.0: the video Download button, its quality menu, the
+  toolbar popup and the settings page have the new look too.
+
 D BOX 1.1.1
 
 • Sites yt-dlp doesn't know ("Unsupported URL") now download: D BOX searches

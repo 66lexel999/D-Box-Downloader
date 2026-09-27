@@ -759,23 +759,23 @@ func doneBind(id string) func(webview.WebView) {
 // (fast) and let the main process coordinate the windows.
 
 func RunDialog(serverURL, query string) error {
-	return runPopup("Download File Info — D BOX", 429, 263, popupDataPath("dialog"), popupGeomDir("dialog"), dialogNav(serverURL, query), "", bindPickers)
+	return runPopup("New download — D BOX", 536, 399, popupDataPath("dialog"), popupGeomDir("dialog2"), dialogNav(serverURL, query), "", bindPickers)
 }
 func RunDone(serverURL, id string) error {
-	return runPopup("Download complete — D BOX", 327, 165, popupDataPath("done"), popupGeomDir("done"), doneNav(serverURL, id), "", doneBind(id))
+	return runPopup("Download complete — D BOX", 436, 249, popupDataPath("done"), popupGeomDir("done2"), doneNav(serverURL, id), "", doneBind(id))
 }
 func RunDetail(serverURL, id string) error {
-	return runPopup("Download status — D BOX", 464, 350, popupDataPath("detail"), popupGeomDir("detail"), detailNav(serverURL, id), id, nil)
+	return runPopup("Download status — D BOX", 556, 479, popupDataPath("detail"), popupGeomDir("detail2"), detailNav(serverURL, id), id, nil)
 }
 
 // OpenDialog opens the New Download window in-process (non-blocking).
 func OpenDialog(serverURL, query string) {
-	go runPopup("Download File Info — D BOX", 429, 263, popupWebviewData("dialog"), popupGeomDir("dialog"), dialogNav(serverURL, query), "", bindPickers)
+	go runPopup("New download — D BOX", 536, 399, popupWebviewData("dialog"), popupGeomDir("dialog2"), dialogNav(serverURL, query), "", bindPickers)
 }
 
 // OpenDone opens the completion window in-process (non-blocking).
 func OpenDone(serverURL, id string) {
-	go runPopup("Download complete — D BOX", 327, 165, popupWebviewData("done"), popupGeomDir("done"), doneNav(serverURL, id), "", doneBind(id))
+	go runPopup("Download complete — D BOX", 436, 249, popupWebviewData("done"), popupGeomDir("done2"), doneNav(serverURL, id), "", doneBind(id))
 }
 
 // OpenDetail opens (or, if already open, focuses) the status window for a task
@@ -788,7 +788,7 @@ func OpenDetail(serverURL, id string) {
 		forceForeground(uintptr(existing.Window()))
 		return
 	}
-	go runPopup("Download status — D BOX", 464, 350, popupWebviewData("detail"), popupGeomDir("detail"), detailNav(serverURL, id), id, nil)
+	go runPopup("Download status — D BOX", 556, 479, popupWebviewData("detail"), popupGeomDir("detail2"), detailNav(serverURL, id), id, nil)
 }
 
 // RevealInExplorer opens Explorer with the file selected and brings it to the

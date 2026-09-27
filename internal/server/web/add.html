@@ -2,134 +2,86 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<script>
-/* Follow the main window's theme (UI settings panel); applied pre-paint. */
-(function () {
-  try {
-    var t = localStorage.getItem("dbox.ui.theme");
-    if (t && t !== "graphite") document.documentElement.setAttribute("data-theme", t);
-  } catch (e) {}
-})();
-</script>
-<title>Download File Info — D BOX</title>
+<title>New download — D BOX</title>
+<link rel="stylesheet" href="/ui/base.css">
+<script src="/ui/ui.js"></script>
 <style>
-  :root {
-    --bg: #3c4043; --panel: #303336; --field: #2a2d2f; --border: #4e5256;
-    --text: #e6e6e6; --muted: #9aa0a4; --accent: #6aa6e6;
-    font-size: 13px;
-  }
-
-  /* ---- themes (follow the main window's UI settings) ---- */
-  :root { color-scheme: dark; --grad-a: #42474b; --grad-b: #383c40; --pri-a: #4f8fd6; --pri-b: #3a6ea8; }
-  :root[data-theme=midnight] { --bg: #22262d; --panel: #181c22; --panel-2: #2b313a; --field: #14171c;
-    --border: #3a424d; --grid: #242931; --text: #dfe3e8; --muted: #8b939e; --accent: #64a8f0;
-    --grad-a: #2b313a; --grad-b: #22272e; }
-  :root[data-theme=ocean] { --bg: #1e2e37; --panel: #152229; --panel-2: #263a44; --field: #121c22;
-    --border: #345460; --grid: #21343e; --text: #dceef2; --muted: #86a4ad; --accent: #4fc3d9;
-    --grad-a: #25424e; --grad-b: #1d343e; --pri-a: #2f9db5; --pri-b: #1f7285; }
-  :root[data-theme=forest] { --bg: #262e26; --panel: #1c231c; --panel-2: #2f3a2f; --field: #171c17;
-    --border: #405040; --grid: #283228; --text: #e2e8e0; --muted: #93a093; --accent: #7cc47f;
-    --grad-a: #2e392e; --grad-b: #252e25; --pri-a: #3f9e4f; --pri-b: #2e7c3c; }
-  :root[data-theme=light] { --bg: #e8eaed; --panel: #ffffff; --panel-2: #f1f3f5; --field: #ffffff;
-    --border: #c3c9d0; --grid: #e4e7ea; --text: #1f2328; --muted: #6a7280; --accent: #1f6fd0;
-    --grad-a: #f6f7f8; --grad-b: #e7eaee; color-scheme: light; }
-  * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
-  body { background: var(--bg); color: var(--text); font: 12px/1.35 "Segoe UI", Tahoma, sans-serif;
-    padding: 11px 13px; -webkit-user-select: none; user-select: none; display: flex; flex-direction: column; }
-
-  .top { display: flex; gap: 10px; align-items: flex-start; }
-  .form { flex: 1; min-width: 0; display: grid; grid-template-columns: 64px 1fr; gap: 7px 9px; align-items: center; }
-  .form > label { color: var(--muted); text-align: right; }
-  input[type=text], select { width: 100%; padding: 4px 7px; font: inherit; border: 1px solid var(--border);
-    border-radius: 4px; background: var(--field); color: var(--text); outline: none; }
-  input[type=text]:focus, select:focus { border-color: var(--accent); }
-  input[type=text]::placeholder { color: var(--muted); }
-  .row { display: flex; gap: 6px; min-width: 0; }
+  body { background: var(--modal); display: flex; flex-direction: column; overflow: hidden; }
+  .hero { display: flex; align-items: center; gap: 14px; padding: 16px 20px 10px; flex: none; }
+  .hero .ctile { border-radius: 10px; }
+  .hero-text { flex: 1; min-width: 0; }
+  .hero-title { font-size: 17px; font-weight: 600; color: var(--text); }
+  .hero-sub { display: flex; align-items: center; gap: 8px; margin-top: 3px; color: var(--muted); font-size: 13px; min-height: 20px; }
+  .hero-sub .pill:empty { display: none; }
+  .form { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 20px 0; display: grid;
+    grid-template-columns: 76px minmax(0, 1fr); gap: 9px 10px; align-items: center; align-content: start; }
+  .form > label { color: var(--text-2); font-size: 13px; }
+  .form input[type=text], .form select, .form input[type=datetime-local] { height: 34px; width: 100%; }
+  .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .row > input, .row > select { flex: 1; min-width: 0; }
-  .iconbtn { flex: none; width: 28px; padding: 0; display: grid; place-items: center; border: 1px solid var(--border);
-    border-radius: 4px; background: var(--panel); color: var(--text); cursor: pointer; font-size: 14px; }
-  .iconbtn:hover { border-color: var(--accent); }
-
-  /* file-type preview (right column) */
-  .preview { width: 80px; flex: none; text-align: center; padding-top: 2px; }
-  .preview .glyph { font-size: 40px; line-height: 1; }
-  .preview .ext { font-size: 10px; font-weight: 700; color: var(--accent); letter-spacing: .04em; margin-top: 2px; }
-  .preview .size { font-size: 10.5px; color: var(--text); margin-top: 5px; }
-
-  .remember { grid-column: 2; display: flex; flex-direction: column; gap: 4px; }
-  .remember label { display: flex; align-items: center; gap: 6px; color: var(--text); }
-  .remember input[type=checkbox] { accent-color: var(--accent); }
-  .remember .pathbox { border: 1px dashed var(--border); border-radius: 4px; padding: 4px 8px; color: var(--muted);
-    font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  /* Buttons follow the form directly (no margin-top:auto push) so they sit right
-     under the Description field instead of stranded at the window's bottom edge. */
-  .buttons { display: flex; gap: 7px; justify-content: flex-end; padding-top: 10px; }
-  button.btn { padding: 6px 13px; border-radius: 5px; border: 1px solid var(--border);
-    background: var(--panel); color: var(--text); font: inherit; cursor: pointer;
-    transition: border-color .12s, filter .12s; }
-  button.btn:hover { border-color: var(--accent); }
-  button.btn:active { filter: brightness(.88); }
-  input[type=checkbox] { accent-color: var(--accent); }
-  button:focus-visible, input:focus-visible, select:focus-visible {
-    outline: 1px solid var(--accent); outline-offset: 1px; }
-  button.btn.primary { background: linear-gradient(var(--pri-a),var(--pri-b)); border-color: var(--pri-b); color: #fff; font-weight: 600; }
-  button.btn:disabled { opacity: .5; cursor: default; }
-  #msg { color: var(--muted); font-size: 11px; min-height: 14px; margin-top: 6px; }
-  #msg.err { color: #e07a7a; } #msg.ok { color: #5cba6a; }
+  #category { flex: 0 0 140px; }
+  #quality { flex: 0 0 44%; }
+  #schedule { flex: 0 0 186px; }
+  .row .lbl2 { color: var(--text-2); font-size: 13px; flex: none; margin-left: 4px; }
+  .remember { grid-column: 2; margin-top: -3px; }
+  .remember .check-row { font-size: 12.5px; color: var(--muted); }
+  .remember input[type=checkbox] { width: 16px; height: 16px; }
+  .remember input[type=checkbox]:checked::after { width: 8px; height: 5px; }
+  #msg { grid-column: 1 / -1; min-height: 18px; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  #msg.err { color: var(--danger); }
+  #msg.ok { color: var(--accent); }
+  .foot { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+    padding: 12px 20px 16px; border-top: 1px solid var(--border-soft); }
+  .foot .grow { flex: 1; }
 </style>
 </head>
 <body>
-  <div class="top">
-    <div class="form">
-      <label for="url">Address</label>
-      <input type="text" id="url" spellcheck="false" autocomplete="off">
-
-      <label for="category">Category</label>
-      <div class="row">
-        <select id="category"></select>
-        <button type="button" class="iconbtn" id="addcat" title="Custom categories aren't supported yet">+</button>
-      </div>
-
-      <label for="folder">Save As</label>
-      <div class="row">
-        <input type="text" id="folder" spellcheck="false" autocomplete="off" placeholder="folder">
-        <button type="button" class="iconbtn" id="browse" title="Browse for a folder">…</button>
-      </div>
-
-      <label for="name">File name</label>
-      <div class="row">
-        <input type="text" id="name" spellcheck="false" autocomplete="off">
-        <select id="quality" title="Video quality" style="display:none; flex:0 0 46%;"></select>
-      </div>
-
-      <div class="remember">
-        <label><input type="checkbox" id="remember"> Remember this path for the category</label>
-      </div>
-
-      <label for="desc">Description</label>
-      <input type="text" id="desc" spellcheck="false" autocomplete="off">
-
-      <label for="schedule">Schedule</label>
-      <input type="datetime-local" id="schedule" title="Optional: start this download at a set time (use Download Later / Schedule)">
-    </div>
-
-    <div class="preview">
-      <div class="glyph" id="glyph">&#128462;</div>
-      <div class="ext" id="ext"></div>
-      <div class="size" id="size">…</div>
+  <div class="hero">
+    <span id="glyph"></span>
+    <div class="hero-text">
+      <div class="hero-title">New download</div>
+      <div class="hero-sub"><span class="pill green" id="ext"></span><span id="size">…</span></div>
     </div>
   </div>
 
-  <div id="msg"></div>
-  <div class="buttons">
-    <button class="btn" id="later">Download Later</button>
-    <button class="btn primary" id="start">Start Download</button>
+  <div class="form">
+    <label for="url">Address</label>
+    <input type="text" id="url" spellcheck="false" autocomplete="off">
+
+    <label for="category">Save to</label>
+    <div class="row">
+      <select id="category"></select>
+      <input type="text" id="folder" spellcheck="false" autocomplete="off" placeholder="Folder">
+      <button type="button" class="btn" id="browse" title="Browse for a folder" style="width:36px; padding:0; flex:none;"><i data-ic="folder" data-sz="17"></i></button>
+    </div>
+    <div class="remember"><label class="check-row"><input type="checkbox" id="remember"> Always save this category here</label></div>
+
+    <label for="name">File name</label>
+    <div class="row">
+      <input type="text" id="name" spellcheck="false" autocomplete="off">
+      <select id="quality" title="Video quality" style="display:none;"></select>
+    </div>
+
+    <label for="desc">Note</label>
+    <div class="row">
+      <input type="text" id="desc" spellcheck="false" autocomplete="off" placeholder="Optional">
+      <span class="lbl2">Start at</span>
+      <input type="datetime-local" id="schedule" title="Optional: start this download at a set time">
+    </div>
+
+    <div id="msg"></div>
+  </div>
+
+  <div class="foot">
     <button class="btn" id="cancel">Cancel</button>
+    <span class="grow"></span>
+    <button class="btn" id="later"><i data-ic="later" data-sz="17"></i><span id="laterLbl">Download later</span></button>
+    <button class="btn btn-primary" id="start"><i data-ic="download" data-sz="17"></i>Start download</button>
   </div>
 
 <script>
+DBOX.hydrate(document);
 const qs = new URLSearchParams(location.search);
 const ext = qs.get("ext") || "";
 const url = qs.get("url") || "";
@@ -154,14 +106,11 @@ let vSize = 0, nameTouched = false;
 const $ = (id) => document.getElementById(id);
 let catDirs = {}, extMap = {}, folderTouched = false;
 
-const GLYPH = { Compressed:["\u{1F5DC}","ZIP"], Documents:["\u{1F4C4}","DOC"], Music:["\u{1F3B5}","MP3"],
-  Video:["\u{1F3AC}","MP4"], Programs:["⚙️","EXE"], Images:["\u{1F5BC}️","IMG"], General:["\u{1F4C4}",""] };
-// Pictures, videos and archives preview with their own artwork (matching the
-// main window); every other category uses its emoji glyph.
-const CAT_IMG = { Images:"/icons/picture.png", Video:"/icons/video.png", Compressed:"/icons/compress.png" };
-function setGlyph(cat, emoji){
-  if (CAT_IMG[cat]) $("glyph").innerHTML = '<img src="'+CAT_IMG[cat]+'" alt="" style="width:42px;height:42px;object-fit:contain;">';
-  else $("glyph").textContent = emoji;
+// The header tile shows the download's category (same artwork as the main list).
+let glyphCat = "";
+function setGlyph(cat){
+  if (cat === glyphCat) return;
+  glyphCat = cat; $("glyph").innerHTML = DBOX.catTile(cat, 46);
 }
 
 function extOf(name){ const m=/\.([A-Za-z0-9]+)$/.exec(name||""); return m?m[1].toLowerCase():""; }
@@ -180,15 +129,13 @@ function closeDialog(){
 
 function updatePreview(){
   const cat = $("category").value || "General";
-  const [g, fallback] = GLYPH[cat] || GLYPH.General;
   if (isVideo) {
-    if (vAudio) setGlyph("Music", "\u{1F3B5}"); else setGlyph("Video", "\u{1F3AC}");
+    setGlyph(vAudio ? "Music" : "Video");
     $("ext").textContent = vExt.toUpperCase();
     return;
   }
-  const e = extOf($("name").value);
-  setGlyph(cat, g);
-  $("ext").textContent = (e || fallback || "").toUpperCase();
+  setGlyph(cat);
+  $("ext").textContent = extOf($("name").value).toUpperCase();
 }
 
 async function init(){
@@ -214,7 +161,6 @@ async function init(){
   $("name").addEventListener("input", autoCat);
   $("category").addEventListener("change", () => { folderTouched = false; setFolderFromCat(); updatePreview(); });
   $("folder").addEventListener("input", () => { folderTouched = true; });
-  $("addcat").addEventListener("click", () => setMsg("Custom categories aren't supported yet.", "err"));
 
   if (canBrowse) {
     $("browse").addEventListener("click", async () => {
@@ -236,7 +182,7 @@ async function init(){
   $("later").addEventListener("click", () => submit(true));
   // Picking a schedule time turns "Download Later" into "Schedule" so it's clear
   // the deferred button will start the download at that time.
-  $("schedule").addEventListener("input", () => { $("later").textContent = $("schedule").value ? "Schedule" : "Download Later"; });
+  $("schedule").addEventListener("input", () => { $("laterLbl").textContent = $("schedule").value ? "Schedule" : "Download later"; });
   $("cancel").addEventListener("click", closeDialog);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { closeDialog(); return; }
@@ -394,11 +340,6 @@ init();
 })();
 </script>
 <div id="wsz"><span id="wsz-t"></span><span id="wsz-x" title="Hide — Ctrl+Alt+W to toggle">&#10005;</span></div>
-<style>
-#wsz{position:fixed;right:7px;bottom:7px;z-index:2147483647;background:rgba(18,20,23,.9);color:#bfe0ff;font:600 11px/1.25 "Segoe UI",Tahoma,sans-serif;padding:3px 8px;border:1px solid #3a8ee6;border-radius:5px;pointer-events:none;white-space:nowrap;letter-spacing:.2px;}
-#wsz-x{pointer-events:auto;cursor:pointer;margin-left:9px;opacity:.6;}
-#wsz-x:hover{opacity:1;}
-</style>
 <script>
 (function(){var N=2,K="dbox.wsz.show";
 var b=document.getElementById("wsz"),t=document.getElementById("wsz-t"),x=document.getElementById("wsz-x");

@@ -22,57 +22,60 @@
 :host { all: initial; }
 * { box-sizing: border-box; }
 .vbtn {
-  position: fixed; display: none; align-items: center; gap: 6px;
-  padding: 3px 6px 3px 8px; margin: 0;
-  font: 12px/1.2 "Segoe UI", Tahoma, sans-serif; color: #e8e8e8; direction: ltr;
-  background: linear-gradient(#3b3f43, #2a2d30);
-  border: 1px solid #565b60; border-radius: 3px;
-  box-shadow: 0 1px 4px rgba(0,0,0,.35);
+  position: fixed; display: none; align-items: center; gap: 7px;
+  height: 30px; padding: 0 5px 0 7px; margin: 0;
+  font: 600 12.5px/1 "Segoe UI", system-ui, sans-serif; color: #ececec; direction: ltr;
+  background: rgba(24,24,24,.94); border: 1px solid #3a3a3a; border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.45);
   cursor: pointer; user-select: none; white-space: nowrap; touch-action: none;
+  transition: border-color .12s, background-color .12s;
 }
-.vbtn.dragging { cursor: grabbing; opacity: .9; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
-.vbtn .play { width: 16px; height: 16px; display: block; flex: none; object-fit: contain; pointer-events: none; }
+.vbtn:hover { background: rgba(34,34,34,.97); border-color: #3fd06f; }
+.vbtn.dragging { cursor: grabbing; opacity: .92; box-shadow: 0 8px 24px rgba(0,0,0,.55); }
+.vbtn .play { width: 18px; height: 18px; display: block; flex: none; object-fit: contain; pointer-events: none; }
+.vbtn .lbl { pointer-events: none; }
 .vbtn .x {
-  display: inline-grid; place-items: center; width: 14px; height: 14px; margin-left: 2px;
-  border: 1px solid #5a5f64; border-radius: 2px; background: #44494d; color: #cfd2d4;
-  font-size: 10px; line-height: 1;
+  display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 1px;
+  border-radius: 5px; color: #8b8b8b; font-size: 10px; line-height: 1;
 }
-.vbtn .x:hover { background: #565b60; }
+.vbtn .x:hover { background: #333; color: #fff; }
 /* Formats prefetched and ready: green outline. */
-.vbtn.ready { border-color: #1faa3f; box-shadow: 0 1px 4px rgba(0,0,0,.35), 0 0 0 1px rgba(31,170,63,.45); }
+.vbtn.ready { border-color: rgba(63,208,111,.8); box-shadow: 0 4px 14px rgba(0,0,0,.45), 0 0 0 1px rgba(63,208,111,.3); }
 
 .menu {
   position: fixed; direction: ltr; text-align: left;
-  width: max-content; min-width: min(280px, calc(100vw - 16px)); max-width: min(520px, calc(100vw - 16px));
+  width: max-content; min-width: min(290px, calc(100vw - 16px)); max-width: min(520px, calc(100vw - 16px));
   max-height: min(70vh, calc(100vh - 16px)); overflow-x: hidden; overflow-y: auto;
-  background: #2b2b2b; color: #eaeaea; border: 1px solid #111; border-radius: 4px;
-  box-shadow: 0 6px 22px rgba(0,0,0,.55);
-  font: 12px/1.4 "Segoe UI", Tahoma, sans-serif; padding: 4px 0; margin: 0;
+  background: #1e1e1e; color: #ececec; border: 1px solid #383838; border-radius: 10px;
+  box-shadow: 0 16px 44px rgba(0,0,0,.6);
+  font: 13px/1.4 "Segoe UI", system-ui, sans-serif; padding: 6px; margin: 0;
 }
+.menu::-webkit-scrollbar { width: 10px; }
+.menu::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 5px; border: 3px solid transparent; background-clip: padding-box; }
 .head {
-  padding: 6px 12px; margin-bottom: 4px; color: #cfcfcf; font-weight: 600;
-  border-bottom: 1px solid #3a3a3a; white-space: normal; overflow-wrap: anywhere;
+  padding: 7px 10px 9px; margin-bottom: 4px; color: #fff; font-weight: 600; font-size: 13.5px;
+  border-bottom: 1px solid #2b2b2b; white-space: normal; overflow-wrap: anywhere;
 }
-.sub { padding: 0 12px 4px; font-size: 11px; opacity: .7; }
-.item { display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; cursor: pointer; min-width: 0; }
-.item:hover { background: #3d6199; color: #fff; }
-.item .n { color: #8a8a8a; flex: none; min-width: 16px; }
-.item:hover .n { color: #d6e2f5; }
+.sub { padding: 6px 10px 3px; font-size: 12px; color: #8b8b8b; }
+.item { display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; min-width: 0; }
+.item:hover { background: rgba(63,208,111,.15); color: #fff; }
+.item .n { color: #6f6f6f; flex: none; min-width: 16px; }
+.item:hover .n { color: #3fd06f; }
 .item .lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.item .sz { flex: none; padding-left: 10px; color: #9a9a9a; font-variant-numeric: tabular-nums; }
-.item:hover .sz { color: #e6eefb; }
-.note { padding: 8px 12px; color: #cfcfcf; white-space: normal; overflow-wrap: anywhere; }
-.note.err { color: #ff9c9c; }
-.foot { border-top: 1px solid #3a3a3a; margin-top: 4px; padding: 5px 12px; font-size: 11px; color: #9a9a9a; cursor: pointer; }
+.item .sz { flex: none; padding-left: 12px; color: #8b8b8b; font-variant-numeric: tabular-nums; }
+.item:hover .sz { color: #d6d6d6; }
+.note { padding: 9px 10px; color: #bdbdbd; white-space: normal; overflow-wrap: anywhere; }
+.note.err { color: #ff8a84; }
+.foot { border-top: 1px solid #2b2b2b; margin-top: 4px; padding: 7px 10px 3px; font-size: 12px; color: #8b8b8b; cursor: pointer; }
 .foot:hover { color: #fff; }
 
 .imgbtn {
-  position: fixed; display: none; place-items: center; width: 26px; height: 26px;
-  background: rgba(20,20,20,.82); color: #fff; font: 15px/1 "Segoe UI", sans-serif;
-  border: 1px solid rgba(255,255,255,.35); border-radius: 5px; cursor: pointer;
-  box-shadow: 0 1px 5px rgba(0,0,0,.5);
+  position: fixed; display: none; place-items: center; width: 30px; height: 30px;
+  background: rgba(24,24,24,.92); color: #fff; font: 600 14px/1 "Segoe UI", sans-serif;
+  border: 1px solid #3a3a3a; border-radius: 8px; cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,.5); transition: border-color .12s;
 }
-.imgbtn:hover { background: #2563eb; }
+.imgbtn:hover { border-color: #3fd06f; }
 .imgbtn img { width: 18px; height: 18px; object-fit: contain; display: block; }
 `;
 
@@ -193,6 +196,7 @@
     btn.className = "vbtn";
     btn.innerHTML =
       '<img class="play" src="' + chrome.runtime.getURL("icons/download.png") + '" alt="">' +
+      '<span class="lbl">Download</span>' +
       '<span class="x" title="Hide">&#10005;</span>';
     btn.title = "Download this video — click to pick a quality · drag to move";
     btn.addEventListener("click", onOpen);

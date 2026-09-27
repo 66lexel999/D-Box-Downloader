@@ -5,7 +5,7 @@ Chrome, Edge (Chromium) and gives you **automatic updates** — users never have
 reload the extension again.
 
 Everything you need is in this `store/` folder:
-- `dbox-integration-3.2.1.zip` — the packaged extension to upload
+- `dbox-integration-3.3.0.zip` — the packaged extension to upload
 - `LISTING.md` — copy/paste text for every dashboard field
 - `promo-1280x800.png` — the required screenshot
 - `icons/icon128.png` (in the extension) — the store icon
@@ -22,7 +22,7 @@ Everything you need is in this `store/` folder:
 
 ## Step 2 — Create the item
 1. In the dashboard click **+ New item**.
-2. Upload **`store/dbox-integration-3.2.1.zip`**.
+2. Upload **`store/dbox-integration-3.3.0.zip`**.
 3. It unpacks and shows the item draft.
 
 ## Step 3 — Fill the listing (from `LISTING.md`)

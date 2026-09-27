@@ -5,10 +5,11 @@ package server
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -41,14 +42,11 @@ var detailHTML []byte
 //go:embed web/icons/appicon.png
 var appiconPNG []byte
 
-//go:embed web/icons/picture.png
-var picturePNG []byte
-
-//go:embed web/icons/video.png
-var videoPNG []byte
-
-//go:embed web/icons/compress.png
-var compressPNG []byte
+// Shared look for every window: theme tokens + components (base.css) and the
+// icon set / theme bootstrap (ui.js).
+//
+//go:embed web/ui
+var uiFiles embed.FS
 
 // extCategory maps a lowercase file extension to an IDM-style category name,
 // so the add dialog can preselect the right category. General is the fallback.
@@ -384,7 +382,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Write(indexHTML)
 	})
-	// Static icon assets (menu-bar logo, browser tab, the Images category icon).
+	// Static icon assets (the app icon for the browser tab / window).
 	pngAsset := func(b []byte) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "image/png")
@@ -395,9 +393,12 @@ func (s *Server) Handler() http.Handler {
 		}
 	}
 	mux.HandleFunc("GET /icons/appicon.png", pngAsset(appiconPNG))
-	mux.HandleFunc("GET /icons/picture.png", pngAsset(picturePNG))
-	mux.HandleFunc("GET /icons/video.png", pngAsset(videoPNG))
-	mux.HandleFunc("GET /icons/compress.png", pngAsset(compressPNG))
+	uiSub, _ := fs.Sub(uiFiles, "web/ui")
+	uiServer := http.StripPrefix("/ui/", http.FileServer(http.FS(uiSub)))
+	mux.Handle("GET /ui/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache") // a rebuilt exe's new look shows at once
+		uiServer.ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("GET /favicon.ico", pngAsset(appiconPNG))
 	// Real per-file Windows shell icon (the app's own icon for an .exe, the
 	// default associated app's for others) — rendered in the downloads table.

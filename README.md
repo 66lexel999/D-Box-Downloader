@@ -3,6 +3,8 @@
 A self-contained, segmented download manager — single ~10 MB binary, zero
 dependencies (Go stdlib only), embedded web UI.
 
+![D BOX main window](docs/screenshots/main.png)
+
 Architecture derived from [maxuanquang/idm](https://github.com/maxuanquang/idm)
 (handler → logic → dataaccess layering, task lifecycle) with its distributed
 stack collapsed for a local single-user app:
@@ -48,8 +50,13 @@ GOOS=windows GOARCH=amd64 go build -trimpath -tags "desktop production" \
 - **Queue** — N tasks download at once (default 3), the rest wait
 - **Global speed limit** — leaky-bucket across all connections (`-limit 2M`)
 - **Per-connection retries** with exponential backoff, budget resets on progress
-- **Live web UI** — per-segment progress bars, speed/ETA, SSE updates, pause /
-  resume / cancel / open / show-in-folder
+- **Modern UI** — sidebar with Downloads / Categories, paste-a-link bar,
+  search, a list with progress bars and one-click actions, a live progress
+  ring with total speed and time left; Dark, Midnight and Light themes; one
+  shared look (`internal/server/web/ui/`: `base.css` tokens + components,
+  `ui.js` SVG icon set) for the main, New download, status and completion
+  windows. Preview it without Windows: `go run ./tools/uidev` then open
+  <http://127.0.0.1:8081> (seeded demo downloads)
 - **Streams (HLS / .m3u8)** — native downloader: picks the best quality, adds
   the separate audio track, decrypts AES-128, handles byte-range and fMP4
   playlists, downloads segments in parallel and resumes after a pause. Live

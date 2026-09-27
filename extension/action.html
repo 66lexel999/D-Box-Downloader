@@ -4,25 +4,46 @@
 <meta charset="utf-8">
 <title>D BOX Integration</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 13px/1.4 "Segoe UI", system-ui, sans-serif; margin: 0; padding: 12px; width: 240px;
-         background: Canvas; color: CanvasText; }
-  h1 { font-size: 14px; margin: 0 0 10px; }
-  label.row { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
-  .status { font-size: 12px; margin: 6px 0 10px; opacity: .85; }
-  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle;
-         margin-right: 6px; background: GrayText; }
-  .up { background: #16a34a; } .down { background: #dc2626; }
-  button { width: 100%; margin-top: 6px; padding: 7px; font: inherit; cursor: pointer;
-           border: 1px solid GrayText; border-radius: 6px; background: ButtonFace; color: ButtonText; }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 268px; padding: 14px; background: #1e1e1e; color: #ececec;
+         font: 13px/1.4 "Segoe UI", system-ui, sans-serif; color-scheme: dark; }
+  .head { display: flex; align-items: center; gap: 11px; padding-bottom: 12px; border-bottom: 1px solid #2b2b2b; }
+  .head img { width: 32px; height: 32px; border-radius: 8px; }
+  .t { font-size: 15px; font-weight: 600; color: #fff; }
+  .s { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8b8b8b; margin-top: 1px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #5e5e5e; flex: none; }
+  .up { background: #3fd06f; box-shadow: 0 0 0 3px rgba(63,208,111,.18); }
+  .down { background: #ff5f57; box-shadow: 0 0 0 3px rgba(255,95,87,.16); }
+  label.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; cursor: pointer; }
+  .hint { font-size: 12px; color: #8b8b8b; }
+  input.switch { appearance: none; width: 38px; height: 22px; border-radius: 11px; background: #444; position: relative;
+    margin: 0; flex: none; cursor: pointer; transition: background .15s; }
+  input.switch::after { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; border-radius: 50%;
+    background: #eee; transition: left .15s; }
+  input.switch:checked { background: #3fd06f; }
+  input.switch:checked::after { left: 19px; background: #fff; }
+  input.switch:focus-visible { outline: 2px solid #3fd06f; outline-offset: 2px; }
+  .btn { width: 100%; height: 36px; margin-top: 8px; font: inherit; cursor: pointer; border-radius: 6px;
+    border: 1px solid #383838; background: #252525; color: #ececec; transition: background .12s; }
+  .btn:hover { background: #2f2f2f; }
+  .btn.primary { background: #3fd06f; border-color: #3fd06f; color: #07190d; font-weight: 600; }
+  .btn.primary:hover { background: #55dd84; }
 </style>
 </head>
 <body>
-  <h1>D BOX Integration</h1>
-  <div class="status"><span class="dot" id="dot"></span><span id="statusText">checking…</span></div>
-  <label class="row"><input type="checkbox" id="enabled"> Capture downloads</label>
-  <button id="open">Open D BOX</button>
-  <button id="opts">Settings…</button>
+  <div class="head">
+    <img src="icons/icon48.png" alt="">
+    <div>
+      <div class="t">D BOX</div>
+      <div class="s"><span class="dot" id="dot"></span><span id="statusText">checking…</span></div>
+    </div>
+  </div>
+  <label class="row">
+    <span>Capture downloads<br><span class="hint">Send browser downloads to D BOX</span></span>
+    <input type="checkbox" class="switch" id="enabled">
+  </label>
+  <button class="btn primary" id="open">Open D BOX</button>
+  <button class="btn" id="opts">Settings</button>
   <script src="action.js"></script>
 </body>
 </html>
