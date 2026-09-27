@@ -1269,16 +1269,7 @@ func (e *Engine) runHTTP(ctx context.Context, t *Task) {
 				e.runHLS(ctx, t)
 				return
 			case kindDASH, kindPage:
-				if err := e.convertToVideo(ctx, t, pr); err != nil {
-					if ctx.Err() != nil {
-						e.finishInterrupted(t)
-						return
-					}
-					e.finishTask(t, err)
-					return
-				}
-				e.log.Info("probed: handing to yt-dlp", "id", t.ID, "kind", pr.Kind, "file", t.FileName)
-				e.runYtdlp(ctx, t)
+				e.routePage(ctx, t, pr)
 				return
 			}
 			e.mu.Lock()
@@ -1691,6 +1682,15 @@ func (e *Engine) runYtdlpNative(ctx context.Context, t *Task) {
 			e.log.Info("site blocked yt-dlp; retrying with browser impersonation", "id", t.ID)
 			e.setNote(t, "Retrying as a browser…")
 			continue
+		}
+		// yt-dlp doesn't know this page: search it ourselves (player iframes,
+		// packed player scripts, direct stream links), like JDownloader.
+		if pageExtractionFailed(msg) && !streamLike(t.URL) && e.crawlAndAdopt(ctx, t) {
+			return
+		}
+		if ctx.Err() != nil {
+			e.finishInterrupted(t)
+			return
 		}
 		e.finishTask(t, fmt.Errorf("yt-dlp: %s", msg))
 		return

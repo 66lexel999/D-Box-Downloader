@@ -1,3 +1,14 @@
+D BOX 1.1.1
+
+• Sites yt-dlp doesn't know ("Unsupported URL") now download: D BOX searches
+  the page itself — player iframes, player scripts (even packed/obfuscated
+  ones) and direct stream links — like JDownloader.
+• Fixed videos in embedded players downloading the wrong thing (only audio, or
+  "Unsupported URL"): the browser extension now downloads the player it
+  actually found, with the page as Referer. Update the extension to 3.2.1.
+• The extension's video menu now also lists the streams the page played, so
+  the real stream is always one click away.
+
 D BOX 1.1.0
 
 • Downloads almost anything: video streams (HLS / .m3u8) are now downloaded as

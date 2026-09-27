@@ -451,17 +451,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     await settingsReady;
     try {
-      // topPageURL resolves what yt-dlp should probe/download when a CONTENT
-      // SCRIPT passes "my own frame's URL". In an iframe-embedded player
-      // (DailyMotion's geo.dailymotion.com/player/xtv3w.html, YouTube embeds,
-      // etc.) location.href is a player SHELL yt-dlp can't resolve, while the
-      // tab's top-level URL is the real page. In the top frame both are equal.
-      const topPageURL = (u) => {
-        if (u && sender.url && u === sender.url && sender.tab && sender.tab.url && sender.tab.url !== u) {
-          return sender.tab.url;
-        }
-        return u;
-      };
       if (msg.type === "status") {
         sendResponse({ ok: await pingMyIDM() });
       } else if (msg.type === "sniffed") {
@@ -495,7 +484,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Open D BOX's New Download window for a video; fall back to a direct
         // queue if D BOX is headless (answers native:false / errors).
         const p = msg.payload || {};
-        const pageURL = topPageURL(p.url);
+        // Download exactly the URL the probe resolved. (This used to swap an
+        // embedded player's own URL for the tab's page URL — but the probe had
+        // just succeeded on the PLAYER, and yt-dlp can't use the page: sites
+        // with the player in an iframe failed with "Unsupported URL", or got
+        // some other media on the page instead, such as a ringtone MP3.)
+        const pageURL = p.url;
         await ensureCookies(pageURL, true); // refresh cookies right before the download
         const tabURL = (sender.tab && sender.tab.url) || "";
         const ctx = await pageContext(pageURL, tabURL && tabURL !== pageURL ? tabURL : "", "");

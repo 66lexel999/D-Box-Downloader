@@ -303,7 +303,7 @@
     ui().appendChild(menu);
 
     const cached = cachedMsg(location.href);
-    if (cached) { renderMenu(cached.result); return; }
+    if (cached) { renderMenu(cached.result, await sniffedStreams()); return; }
 
     setMenu('<div class="note">Probing formats…</div>');
     const res = await warm(location.href);
@@ -332,7 +332,12 @@
       setMenu('<div class="note err">' + esc(m) + "</div>");
       return;
     }
-    renderMenu(res.result);
+    renderMenu(res.result, await sniffedStreams());
+  }
+
+  async function sniffedStreams() {
+    const sn = await send({ type: "sniffed" });
+    return ((sn && sn.streams) || []).filter((s) => s.kind !== "sub");
   }
 
   function pageTitle() {
@@ -347,7 +352,7 @@
       const label = s.kind === "hls" ? "Video stream (" + s.ext.toUpperCase() + ")"
                   : s.kind === "sub" ? s.ext.toUpperCase() + " subtitles"
                   : "Direct file (" + s.ext.toUpperCase() + ")";
-      html += itemHTML('data-si="' + i + '"', i, label, s.size ? humanBytes(s.size) : "");
+      html += itemHTML('data-si="' + i + '"', i, label, s.kind === "file" && s.size ? humanBytes(s.size) : "" /* a playlist's own bytes aren't the video's size */);
     });
     setMenu(html);
     menu.querySelectorAll("[data-si]").forEach((row) =>
@@ -381,20 +386,34 @@
     while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
     return n.toFixed(i && n < 10 ? 1 : 0) + " " + u[i];
   }
-  function renderMenu(info) {
+  // renderMenu lists yt-dlp's qualities AND, below them, the streams the page
+  // actually played (like IDM's list) — so when yt-dlp picks up the wrong thing
+  // on a page (a ringtone, a trailer), the real stream is still one click away.
+  function renderMenu(info, streams) {
+    streams = streams || [];
     const title = (info.title || pageTitle()).trim();
-    if (!(info.options || []).length) {
+    const opts = info.options || [];
+    if (!opts.length && !streams.length) {
       setMenu(headHTML(title) + '<div class="note">No downloadable formats found for this video.</div>');
       return;
     }
     let html = headHTML(title);
-    info.options.forEach((o, i) => {
+    opts.forEach((o, i) => {
       const lbl = String(o.label || "").replace(/\s*\(~[^)]*\)\s*$/, ""); // size has its own column
       html += itemHTML('data-i="' + i + '"', i, lbl, humanBytes(o.size));
     });
+    if (streams.length) {
+      html += '<div class="sub" style="padding-top:6px">Streams the page played:</div>';
+      streams.forEach((s, j) => {
+        const label = s.kind === "hls" ? "Video stream (" + s.ext.toUpperCase() + ")" : "Direct file (" + s.ext.toUpperCase() + ")";
+        html += itemHTML('data-si="' + j + '"', opts.length + j, label, s.kind === "file" && s.size ? humanBytes(s.size) : "" /* a playlist's own bytes aren't the video's size */);
+      });
+    }
     setMenu(html);
     menu.querySelectorAll("[data-i]").forEach((row) =>
       row.addEventListener("click", () => pick(info, +row.dataset.i, title)));
+    menu.querySelectorAll("[data-si]").forEach((row) =>
+      row.addEventListener("click", () => pickSniffed(streams[+row.dataset.si])));
   }
 
   async function pick(info, i, title) {

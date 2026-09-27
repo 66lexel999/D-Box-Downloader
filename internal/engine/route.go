@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"myidm/internal/ytdlp"
@@ -151,4 +152,127 @@ func (e *Engine) handToYtdlp(ctx context.Context, t *Task, cause error) bool {
 	e.log.Info("server refused D BOX's requests; handing the stream to yt-dlp", "id", t.ID, "err", cause)
 	e.runYtdlp(ctx, t)
 	return true
+}
+
+// routePage handles a URL the probe found to be a web page or DASH manifest:
+// yt-dlp first (it knows ~1800 sites), then D BOX's own page crawler for
+// everything yt-dlp calls "Unsupported URL". Drives the task to a terminal state.
+func (e *Engine) routePage(ctx context.Context, t *Task, pr probeResult) {
+	err := e.convertToVideo(ctx, t, pr)
+	if err == nil {
+		e.log.Info("probed: handing to yt-dlp", "id", t.ID, "kind", pr.Kind, "file", t.FileName)
+		e.runYtdlp(ctx, t)
+		return
+	}
+	if ctx.Err() != nil {
+		e.finishInterrupted(t)
+		return
+	}
+	if pr.Kind == kindPage && e.crawlAndAdopt(ctx, t) {
+		return
+	}
+	if ctx.Err() != nil {
+		e.finishInterrupted(t)
+		return
+	}
+	e.finishTask(t, err)
+}
+
+// pageExtractionFailed reports yt-dlp errors that mean "this page isn't a site
+// I know / I found no video in it" — the cases the crawler can still solve.
+func pageExtractionFailed(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, s := range []string{"unsupported url", "no video formats", "unable to extract", "unable to find",
+		"no media found", "no video could be found", "requested format is not available"} {
+		if strings.Contains(m, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// crawlAndAdopt searches the task's page for its video and, when it finds one,
+// re-points the task at it and runs it. Returns true when it took the task
+// over (the task has reached a terminal state).
+func (e *Engine) crawlAndAdopt(ctx context.Context, t *Task) bool {
+	e.mu.Lock()
+	if t.crawled {
+		e.mu.Unlock()
+		return false
+	}
+	t.crawled = true
+	page, ri := t.URL, t.reqInfo()
+	e.mu.Unlock()
+
+	e.setNote(t, "Searching the page for the video…")
+	fm := e.findMedia(ctx, page, ri)
+	e.setNote(t, "")
+	if fm == nil {
+		return false
+	}
+	e.adoptFound(ctx, t, page, fm)
+	return true
+}
+
+// adoptFound re-points a task at media the crawler found and runs it.
+func (e *Engine) adoptFound(ctx context.Context, t *Task, page string, fm *foundMedia) {
+	e.mu.Lock()
+	title := ""
+	if s, _ := splitExt(t.FileName); t.FileName != "" && !isGenericStem(s) && t.Kind == "" {
+		title = s // named by the user in the New Download window
+	}
+	if title == "" {
+		title = cleanTitle(t.Title) // the title the user / extension gave the download
+	}
+	if title == "" {
+		title = cleanTitle(fm.Title) // the page's own title
+	}
+	if title == "" {
+		title = streamBaseName("", page, t.Referer)
+	}
+	t.Headers = portableHeaders(t.Headers, page, fm.URL)
+	t.URL = fm.URL
+	t.Referer = fm.Referer
+	t.Title = title
+	t.Live = false
+	t.Size, t.SizeEstimated = -1, false
+	t.Segments = []*Segment{{Start: 0, End: -1}}
+	switch fm.Kind {
+	case kindHLS:
+		t.Kind = "hls"
+		t.FileName = SanitizeFileName(title) + ".mp4"
+		t.Probed = true
+	case kindFile:
+		// Media URLs found in players are rarely named ("4f9a.mp4?token=…"): name
+		// it after the title; runHTTP's probe adds the real extension.
+		t.Kind = ""
+		t.FileName = SanitizeFileName(title)
+		t.Probed = false
+	default: // "ytdlp": an embed page or DASH manifest yt-dlp can take
+		best := ytdlp.DownOption{Selector: "bv*+ba/b", Ext: "mp4"}
+		if fm.Video != nil && len(fm.Video.Options) > 0 {
+			best = fm.Video.Options[0]
+		}
+		t.Kind = "ytdlp"
+		t.Selector = best.Selector
+		t.Audio = best.Audio
+		t.FileName = SanitizeFileName(title) + "." + best.Ext
+		t.Probed = true
+		if best.Size > 0 {
+			t.Size, t.SizeEstimated = best.Size, true
+			t.Segments[0].End = best.Size - 1
+		}
+	}
+	e.saveLocked()
+	e.mu.Unlock()
+	e.log.Info("page crawler found the media", "id", t.ID, "page", page, "media", fm.URL, "kind", fm.Kind)
+
+	switch t.Kind {
+	case "hls":
+		e.runHLS(ctx, t)
+	case "ytdlp":
+		e.runYtdlp(ctx, t)
+	default:
+		e.runHTTP(ctx, t)
+	}
 }

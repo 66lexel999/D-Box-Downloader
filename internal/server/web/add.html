@@ -282,6 +282,13 @@ async function inspect(autoCat){
     setName(d.video.title || "");
     fillQuality(opts);
     setMsg("Web page — D BOX will download the video on it.");
+  } else if (d.kind === "page" && d.found) {
+    // yt-dlp doesn't know this site, but D BOX's page search found the video
+    // (in a player iframe / player script). Start downloads it.
+    const f = d.found;
+    setName((f.title || "video") + ".mp4");
+    $("size").textContent = f.size > 0 ? "~" + humanSize(f.size) : "video";
+    setMsg("Found the video on this page (" + (f.kind === "hls" ? "HLS stream" : f.kind === "ytdlp" ? "player" : "video file") + ").");
   } else if (d.kind === "page") {
     $("size").textContent = "web page";
     setMsg(d.ytdlp ? ("No downloadable video found on this page" + (d.videoError ? " (" + d.videoError + ")" : "") + ".")

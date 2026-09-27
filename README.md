@@ -58,6 +58,12 @@ GOOS=windows GOARCH=amd64 go build -trimpath -tags "desktop production" \
 - **Web pages & DASH** — paste a page instead of a file and D BOX hands it to
   yt-dlp, which finds the video (with its real title and an estimated size);
   DASH (.mpd) manifests go the same way
+- **Page crawler (JDownloader-style)** — for sites yt-dlp calls "Unsupported
+  URL", D BOX searches the page itself: player iframes and "server" lists
+  (followed two levels deep, each with the right Referer), inline player
+  configs, P.A.C.K.E.R.-packed player scripts, and direct stream/file links —
+  then downloads the first candidate that answers like media (streams and video
+  before audio, so a page's ringtone never wins over its video)
 - **Real names and sizes** — names come from Content-Disposition (including
   malformed / RFC 5987 / percent-encoded ones), pre-signed S3/GCS/Azure links
   (`response-content-disposition=`, `rscd=`), the original link when a CDN

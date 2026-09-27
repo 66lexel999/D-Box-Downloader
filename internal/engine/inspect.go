@@ -85,3 +85,29 @@ func (e *Engine) Inspect(ctx context.Context, rawURL, referer string, headers ma
 	}
 	return res, nil
 }
+
+// PageMedia is what the page crawler found for the New Download window.
+type PageMedia struct {
+	URL   string `json:"url"`
+	Kind  string `json:"kind"` // hls | file | ytdlp
+	Title string `json:"title,omitempty"`
+	Size  int64  `json:"size"`
+}
+
+// FindOnPage runs the page crawler (the fallback for pages yt-dlp doesn't
+// know) and reports what it would download, or nil.
+func (e *Engine) FindOnPage(ctx context.Context, rawURL, referer string, headers map[string]string) *PageMedia {
+	u, err := parseDownloadURL(rawURL)
+	if err != nil {
+		return nil
+	}
+	fm := e.findMedia(ctx, u.String(), reqInfo{Referer: cleanReferer(referer), Headers: CleanHeaders(headers)})
+	if fm == nil {
+		return nil
+	}
+	pm := &PageMedia{URL: fm.URL, Kind: fm.Kind, Title: cleanTitle(fm.Title), Size: fm.Size}
+	if fm.Video != nil && len(fm.Video.Options) > 0 && fm.Video.Options[0].Size > 0 {
+		pm.Size = fm.Video.Options[0].Size
+	}
+	return pm
+}

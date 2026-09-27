@@ -926,6 +926,7 @@ type inspectResponse struct {
 	Error      string             `json:"error,omitempty"`
 	Video      *ytdlp.ProbeResult `json:"video,omitempty"`      // formats, when the URL is a video page / DASH
 	VideoError string             `json:"videoError,omitempty"` // why yt-dlp found no video
+	Found      *engine.PageMedia  `json:"found,omitempty"`      // what the page crawler found when yt-dlp didn't
 	Ytdlp      bool               `json:"ytdlp"`
 }
 
@@ -963,6 +964,12 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		} else {
 			out.Video = v
 		}
+	}
+	// yt-dlp doesn't know the page (or isn't installed): search it ourselves.
+	if res.Kind == "page" && out.Video == nil {
+		fctx, fcancel := context.WithTimeout(r.Context(), 60*time.Second)
+		out.Found = s.eng.FindOnPage(fctx, res.URL, referer, headers)
+		fcancel()
 	}
 	writeJSON(w, http.StatusOK, out)
 }

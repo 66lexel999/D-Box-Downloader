@@ -119,6 +119,7 @@ type Task struct {
 
 	// runtime
 	note       string // short status note for the UI ("Connecting…", "Merging…")
+	crawled    bool   // the page crawler already ran for this task (never loop)
 	cancel     context.CancelFunc
 	intent     intent
 	deleteFile bool

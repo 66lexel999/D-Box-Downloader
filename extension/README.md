@@ -8,8 +8,10 @@ The browser side of D BOX, like IDM's integration module. Manifest V3.
   No browser setting has to change.
 - **"Download this video" button** — appears over the largest video on a page
   (including players embedded in iframes). Its menu lists qualities from D BOX's
-  yt-dlp probe; when yt-dlp can't read the page, it lists the streams the page
-  actually loaded (captured off the network), IDM-style. **Drag the button** to
+  yt-dlp probe, followed by the streams the page actually played (captured off
+  the network), IDM-style — so if yt-dlp picks up the wrong thing on a page, the
+  real stream is still one click away. For a player inside an iframe, the
+  player's own URL is what's downloaded, with the page as Referer. **Drag the button** to
   put it anywhere on the video; the spot is remembered per site ("Reset button
   position" in the menu puts it back).
 - **Image grabber** — hover a large image for a download badge.
