@@ -70,16 +70,16 @@ desktop download manager running on the user's own computer.
 - **tabs** —
   `Open the New Download popup window and associate detected media with the correct tab.`
 - **cookies** —
-  `Pass the user's existing sign-in session for a site (e.g. Instagram) to the local D BOX app so it can download content the user is already logged in to view. Cookies are sent only to 127.0.0.1 (the user's own computer) and never to any remote server.`
+  `When the user downloads a file or video, pass that site's cookies (e.g. their existing sign-in session) to the local D BOX app so its request matches the browser's and the site serves the file. Cookies are sent only to 127.0.0.1 (the user's own computer) and never to any remote server.`
 - **webRequest** —
-  `Observe (never block or modify) media requests so the extension can offer the direct video/audio streams a page loads for download via D BOX.`
+  `Observe (never block or modify) media requests, and the page address (Referer/Origin) they were made from, so the extension can offer the video/audio streams a page loads and D BOX can request them the same way.`
 - **host permission `<all_urls>`** —
   `The user may download from any website, so the content script and media detection must be able to run on all sites.`
 
 **Are you using remote code?** → **No.**
 
 **Data usage** (check the boxes honestly):
-- Data handled: *Website content* (media/download URLs) and *Authentication information* (site cookies, only for login-gated downloads).
+- Data handled: *Website content* (media/download URLs) and *Authentication information* (the site's cookies, only for a download the user starts).
 - ✔ "I do not sell or transfer user data to third parties, outside of the approved use cases."
 - ✔ "I do not use or transfer user data for purposes unrelated to my item's single purpose."
 - ✔ "I do not use or transfer user data to determine creditworthiness or for lending purposes."

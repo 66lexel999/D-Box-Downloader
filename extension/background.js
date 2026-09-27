@@ -198,8 +198,9 @@ function capture(tabId, frameId, url, ext, size) {
 
 function resetTab(tabId) {
   seenSize.delete(tabId);
+  hdrSeen.delete(tabId);
   writeChain.delete(tabId);
-  chrome.storage.session.remove(sessKey(tabId)).catch(() => {});
+  chrome.storage.session.remove([sessKey(tabId), hdrKey(tabId)]).catch(() => {});
 }
 
 // resetFrame drops one frame's captures when its iframe navigates to a new
@@ -244,6 +245,47 @@ chrome.webRequest.onHeadersReceived.addListener(
   ["responseHeaders"]
 );
 
+// The Referer/Origin the browser sent when the player fetched each stream.
+// Many stream servers only answer requests that come "from" the page the video
+// plays on (hotlink protection, Cloudflare rules) — IDM and JDownloader replay
+// exactly these headers, and so does D BOX now. Observed only (non-blocking);
+// "extraHeaders" is what makes Referer/Origin visible to the listener. Only
+// manifests and media files are recorded (not every HLS segment).
+const hdrKey = (tabId) => "hdr_" + tabId;
+const hdrSeen = new Map(); // tabId -> Set(url)  in-memory write throttle
+
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (d) => {
+    if (d.tabId < 0) return;
+    const ext = mediaExt(d.url, "");
+    const kind = ext ? extKind(ext) : (d.type === "media" ? "file" : "");
+    if (kind !== "hls" && kind !== "file") return;
+    const key = String(d.url).split("#")[0];
+    let seen = hdrSeen.get(d.tabId);
+    if (!seen) { seen = new Set(); hdrSeen.set(d.tabId, seen); }
+    if (seen.has(key)) return;
+    seen.add(key);
+    let referer = "", origin = "";
+    for (const h of d.requestHeaders || []) {
+      const n = h.name.toLowerCase();
+      if (n === "referer") referer = h.value || "";
+      else if (n === "origin" && h.value !== "null") origin = h.value || "";
+    }
+    if (!referer && !origin) return;
+    withChain(d.tabId, async () => {
+      const k = hdrKey(d.tabId);
+      let m;
+      try { m = (await chrome.storage.session.get(k))[k] || {}; } catch (_) { m = {}; }
+      m[key] = { referer, origin };
+      const keys = Object.keys(m);
+      if (keys.length > 150) delete m[keys[0]];
+      try { await chrome.storage.session.set({ [k]: m }); } catch (_) {}
+    });
+  },
+  { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "other"] },
+  ["requestHeaders", "extraHeaders"]
+);
+
 chrome.tabs.onRemoved.addListener(resetTab);
 
 // sniffedMedia returns the CURRENTLY-PLAYING video's streams for a tab. The
@@ -263,24 +305,59 @@ async function sniffedMedia(tabId) {
   const hasMaster = list.some((s) => s.kind === "hls" && /master\.m3u8/i.test(s.url));
   if (hasMaster) list = list.filter((s) => s.kind !== "hls" || /master\.m3u8/i.test(s.url));
   const rank = { hls: 0, file: 1, sub: 2 };
-  return list.sort((a, b) => (rank[a.kind] - rank[b.kind]) || ((b.ts || 0) - (a.ts || 0)) || ((b.size || 0) - (a.size || 0)));
+  list.sort((a, b) => (rank[a.kind] - rank[b.kind]) || ((b.ts || 0) - (a.ts || 0)) || ((b.size || 0) - (a.size || 0)));
+  let hdrs = {};
+  try { hdrs = (await chrome.storage.session.get(hdrKey(tabId)))[hdrKey(tabId)] || {}; } catch (_) {}
+  return list.map((s) => Object.assign({}, s, hdrs[s.url] || {}));
 }
 
-function handOff(url, name) {
+// ---- page context handed to D BOX -----------------------------------------
+// cookieHeader returns the browser's cookies for url as a Cookie header value
+// (httpOnly included — chrome.cookies sees them). Sent only to the local D BOX
+// app, which keeps them server-side for this one download.
+function cookieHeader(url) {
+  return new Promise((resolve) => {
+    try {
+      chrome.cookies.getAll({ url }, (list) => {
+        if (chrome.runtime.lastError || !list) { resolve(""); return; }
+        resolve(list.map((c) => c.name + "=" + c.value).join("; "));
+      });
+    } catch { resolve(""); }
+  });
+}
+
+// pageContext is what makes D BOX's request look like the browser's own: the
+// page it came from, the site's cookies, the browser's User-Agent (Cloudflare
+// ties its clearance cookie to it) and, for player requests, the Origin.
+async function pageContext(url, referer, origin) {
+  const ctx = { userAgent: navigator.userAgent };
+  if (referer) ctx.referer = referer;
+  const cookies = await cookieHeader(url);
+  if (cookies) ctx.cookies = cookies;
+  if (origin) ctx.headers = { Origin: origin };
+  return ctx;
+}
+
+async function handOff(url, name, referer) {
   // Prefer D BOX's own native "New Download" window; if it's headless (no GUI)
   // it answers {native:false} and we open the browser popup dialog instead.
+  // The page context rides along so hotlink-protected files download too.
+  const ctx = await pageContext(url, referer, "");
   fetch(base() + "/api/prompt", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, name })
+    body: JSON.stringify(Object.assign({ url, name }, ctx))
   })
     .then((r) => (r.ok ? r.json() : Promise.reject()))
-    .then((d) => { if (!d || !d.native) openAddPopup(url, name); })
-    .catch(() => openAddPopup(url, name));
+    .then((d) => { if (!d || !d.native) openAddPopup(url, name, referer); })
+    .catch(() => openAddPopup(url, name, referer));
 }
 
-function openAddPopup(url, name) {
+// openAddPopup is the headless fallback. Cookies are NOT put in this URL; the
+// dialog still passes the page along as the Referer.
+function openAddPopup(url, name, referer) {
   const params = new URLSearchParams({ url, name, ext: chrome.runtime.id });
+  if (referer) params.set("referer", referer);
   chrome.windows.create({
     url: base() + "/add?" + params.toString(),
     type: "popup", width: 600, height: 460
@@ -302,7 +379,7 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       void chrome.runtime.lastError;
       // erase removes the cancelled stub from the browser's download shelf/history
       chrome.downloads.erase({ id: item.id }, () => void chrome.runtime.lastError);
-      handOff(item.finalUrl || item.url, name);
+      handOff(item.finalUrl || item.url, name, item.referrer || "");
     });
   })();
   return true; // async suggest()
@@ -403,7 +480,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         let r = null, data = null, resolved = "";
         for (const u of candidates) {
           await ensureCookies(u); // authenticate yt-dlp BEFORE probing (IG/etc.)
-          r = await fetch(base() + "/api/probe?url=" + encodeURIComponent(u));
+          // An embedded player (the frame URL) usually only answers when the
+          // embedding page is the Referer.
+          const ref = tabURL && tabURL !== u ? "&referer=" + encodeURIComponent(tabURL) : "";
+          r = await fetch(base() + "/api/probe?url=" + encodeURIComponent(u) + ref);
           data = await r.json().catch(() => ({}));
           if (r.ok) { resolved = u; break; }
         }
@@ -417,20 +497,48 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const p = msg.payload || {};
         const pageURL = topPageURL(p.url);
         await ensureCookies(pageURL, true); // refresh cookies right before the download
+        const tabURL = (sender.tab && sender.tab.url) || "";
+        const ctx = await pageContext(pageURL, tabURL && tabURL !== pageURL ? tabURL : "", "");
         let native = false;
         try {
-          const d = await postJSON("/api/prompt", {
+          const d = await postJSON("/api/prompt", Object.assign({
             url: pageURL, name: p.title, video: true,
             selector: p.selector, ext: p.ext, audio: !!p.audio, title: p.title
-          });
+          }, ctx));
           native = !!(d && d.native);
         } catch (_) {}
         if (native) sendResponse({ ok: true, native: true });
-        else sendResponse({ ok: true, result: await postJSON("/api/video", {
-          url: pageURL, title: p.title, selector: p.selector, ext: p.ext, audio: !!p.audio, category: "Video"
-        }) });
+        else sendResponse({ ok: true, result: await postJSON("/api/video", Object.assign({
+          url: pageURL, title: p.title, selector: p.selector, ext: p.ext, audio: !!p.audio,
+          size: p.size || 0, category: "Video"
+        }, ctx)) });
+      } else if (msg.type === "promptStream") {
+        // A stream/file the page loaded (captured off the network). Hand it to
+        // D BOX's New Download window as a plain download: D BOX detects HLS and
+        // downloads it natively (best quality + separate audio track), sends
+        // DASH to yt-dlp, and falls back to yt-dlp-as-a-browser if the server
+        // still refuses. The Referer/Origin the player really used, the site's
+        // cookies and Brave's User-Agent go with it.
+        const p = msg.payload || {};
+        if (p.kind === "sub") {
+          const ctx = await pageContext(p.url, p.referer || p.frameUrl || "", "");
+          const name = ((p.url.split("?")[0].split("/").pop()) || ("subtitles." + p.ext)).replace(/[<>:"/\\|?*]+/g, "_");
+          sendResponse({ ok: true, result: await postJSON("/api/tasks", Object.assign({ url: p.url, fileName: name, category: "Documents" }, ctx)) });
+          return;
+        }
+        const title = (sender.tab && sender.tab.title) || p.title || "";
+        const ctx = await pageContext(p.url, p.referer || p.frameUrl || (sender.tab && sender.tab.url) || "", p.origin || "");
+        let native = false;
+        try {
+          const d = await postJSON("/api/prompt", Object.assign({ url: p.url, title }, ctx));
+          native = !!(d && d.native);
+        } catch (_) {}
+        if (native) sendResponse({ ok: true, native: true });
+        else sendResponse({ ok: true, result: await postJSON("/api/tasks", Object.assign({ url: p.url, title, category: "Video" }, ctx)) });
       } else if (msg.type === "queueFile") {
-        sendResponse({ ok: true, result: await postJSON("/api/tasks", msg.payload) });
+        const p = msg.payload || {};
+        const ctx = await pageContext(p.url, p.referer || (sender.tab && sender.tab.url) || "", "");
+        sendResponse({ ok: true, result: await postJSON("/api/tasks", Object.assign({}, p, ctx)) });
       } else {
         sendResponse({ ok: false, error: "unknown message" });
       }

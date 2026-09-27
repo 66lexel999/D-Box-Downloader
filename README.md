@@ -122,6 +122,8 @@ internal/store/       atomic JSON persistence
 internal/engine/      scheduler, segment planner, ranged/whole-stream
                       downloaders, rate limiter, probe (size/ranges/filename)
 internal/server/      REST + SSE handlers, embedded web UI
+extension/            the D BOX Integration browser extension (load unpacked in
+                      Brave/Chrome; see extension/README.md)
 tools/testserver/     HTTP server simulating ranged/slow/no-range/chunked origins
 tools/e2e.sh          end-to-end suite (integrity, pause/resume, crash recovery)
 ```

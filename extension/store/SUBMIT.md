@@ -5,7 +5,7 @@ Chrome, Edge (Chromium) and gives you **automatic updates** — users never have
 reload the extension again.
 
 Everything you need is in this `store/` folder:
-- `dbox-integration-3.1.1.zip` — the packaged extension to upload
+- `dbox-integration-3.2.0.zip` — the packaged extension to upload
 - `LISTING.md` — copy/paste text for every dashboard field
 - `promo-1280x800.png` — the required screenshot
 - `icons/icon128.png` (in the extension) — the store icon
@@ -22,7 +22,7 @@ Everything you need is in this `store/` folder:
 
 ## Step 2 — Create the item
 1. In the dashboard click **+ New item**.
-2. Upload **`store/dbox-integration-3.1.1.zip`**.
+2. Upload **`store/dbox-integration-3.2.0.zip`**.
 3. It unpacks and shows the item draft.
 
 ## Step 3 — Fill the listing (from `LISTING.md`)
@@ -52,7 +52,7 @@ Everything you need is in this `store/` folder:
 ---
 
 ## Shipping updates later (this is the payoff)
-1. Bump `"version"` in `manifest.json` (e.g. `3.1.1`).
+1. Bump `"version"` in `manifest.json` (e.g. `3.2.1`).
 2. Re-zip the extension (same file list; keep forward-slash paths).
 3. Dashboard → your item → **Package** → **Upload new package** → Submit.
 4. Once approved, **every user auto-updates** within hours — no manual reload.
@@ -63,11 +63,10 @@ Everything you need is in this `store/` folder:
 Your riskiest permissions for review are **`cookies`** combined with
 **`<all_urls>`** — reviewers scrutinize any extension that can read cookies on
 all sites. Your justification is strong (cookies go only to the user's own
-localhost app, never off-device, only for login-gated downloads the user
-initiates), and download-manager companions like IDM's own extension are on the
+localhost app, never off-device, only for downloads the user initiates), and download-manager companions like IDM's own extension are on the
 store, so it's very publishable. But if it's rejected:
 - **Easiest fix:** ship a store build WITHOUT the `cookies` permission (drop it
-  from `manifest.json` + the `ensureCookies` calls). You lose only the automatic
+  from `manifest.json` + the `ensureCookies` / `cookieHeader` calls). You lose only the automatic
   Instagram-login passthrough; everything else — file capture, video/iframe
   detection, HLS streams — still works. I can produce that trimmed build in a
   minute if needed.
