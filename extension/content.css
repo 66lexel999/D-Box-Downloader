@@ -1,0 +1,74 @@
+/* MyIDM video/image grab overlay - styled after IDM's "Download this video". */
+
+.myidm-vbtn {
+  position: fixed;
+  z-index: 2147483646;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 8px;
+  font: 12px/1.2 "Segoe UI", Tahoma, sans-serif;
+  color: #e8e8e8;
+  background: linear-gradient(#3b3f43, #2a2d30); /* gray-black, not white */
+  border: 1px solid #565b60;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .35);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.myidm-vbtn .play { width: 16px; height: 16px; display: block; flex: none; object-fit: contain; cursor: pointer; }
+.myidm-vbtn .mini {
+  display: inline-grid; place-items: center;
+  width: 14px; height: 14px; margin-left: 2px;
+  border: 1px solid #5a5f64; border-radius: 2px;
+  background: #44494d; color: #cfd2d4; font-size: 10px; line-height: 1;
+}
+.myidm-vbtn .mini:hover { background: #565b60; }
+/* Formats prefetched and ready: green outline + a caret hinting the menu. */
+.myidm-vbtn.ready { border-color: #1faa3f; box-shadow: 0 1px 4px rgba(0, 0, 0, .35), 0 0 0 1px rgba(31, 170, 63, .45); }
+
+.myidm-vmenu {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 320px; max-width: 560px;
+  max-height: 70vh; overflow-y: auto;
+  background: #2b2b2b;
+  color: #eaeaea;
+  border: 1px solid #111;
+  border-radius: 4px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .55);
+  font: 12px/1.4 "Segoe UI", Tahoma, sans-serif;
+  padding: 4px 0;
+}
+.myidm-vmenu .head {
+  padding: 6px 12px; color: #cfcfcf; font-weight: 600;
+  border-bottom: 1px solid #3a3a3a; margin-bottom: 4px;
+}
+.myidm-vmenu .row {
+  display: flex; gap: 8px; padding: 6px 12px; cursor: pointer; align-items: baseline;
+  white-space: nowrap;
+}
+.myidm-vmenu .row:hover { background: #3d6199; color: #fff; }
+.myidm-vmenu .row .n { color: #8a8a8a; min-width: 16px; }
+.myidm-vmenu .row:hover .n { color: #d6e2f5; }
+.myidm-vmenu .row .lbl { overflow: hidden; text-overflow: ellipsis; }
+.myidm-vmenu .row .sz { margin-left: auto; padding-left: 10px; color: #9a9a9a; font-variant-numeric: tabular-nums; }
+.myidm-vmenu .row:hover .sz { color: #e6eefb; }
+.myidm-vmenu .msg { padding: 8px 12px; color: #cfcfcf; }
+.myidm-vmenu .msg.err { color: #ff9c9c; }
+
+.myidm-imgbtn {
+  position: absolute;
+  z-index: 2147483646;
+  display: grid; place-items: center;
+  width: 26px; height: 26px;
+  background: rgba(20, 20, 20, .82);
+  color: #fff; font-size: 15px;
+  border: 1px solid rgba(255, 255, 255, .35);
+  border-radius: 5px;
+  cursor: pointer;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, .5);
+}
+.myidm-imgbtn:hover { background: #2563eb; }
+.myidm-imgbtn img { width: 18px; height: 18px; object-fit: contain; display: block; }

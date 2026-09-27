@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>D BOX Integration</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px/1.4 "Segoe UI", system-ui, sans-serif; margin: 0; padding: 12px; width: 240px;
+         background: Canvas; color: CanvasText; }
+  h1 { font-size: 14px; margin: 0 0 10px; }
+  label.row { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
+  .status { font-size: 12px; margin: 6px 0 10px; opacity: .85; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle;
+         margin-right: 6px; background: GrayText; }
+  .up { background: #16a34a; } .down { background: #dc2626; }
+  button { width: 100%; margin-top: 6px; padding: 7px; font: inherit; cursor: pointer;
+           border: 1px solid GrayText; border-radius: 6px; background: ButtonFace; color: ButtonText; }
+</style>
+</head>
+<body>
+  <h1>D BOX Integration</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">checking…</span></div>
+  <label class="row"><input type="checkbox" id="enabled"> Capture downloads</label>
+  <button id="open">Open D BOX</button>
+  <button id="opts">Settings…</button>
+  <script src="action.js"></script>
+</body>
+</html>

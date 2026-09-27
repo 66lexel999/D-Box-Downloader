@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "D BOX Integration",
+  "version": "3.1.3",
+  "description": "Captures browser downloads (like IDM) and hands them to D BOX's New Download dialog. No browser setting changes needed.",
+  "permissions": [
+    "downloads",
+    "storage",
+    "notifications",
+    "tabs",
+    "cookies",
+    "webRequest"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "D BOX Integration",
+    "default_popup": "action.html",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "options_page": "options.html",
+  "externally_connectable": { "matches": ["http://127.0.0.1/*", "http://localhost/*"] },
+  "web_accessible_resources": [
+    { "resources": ["icons/download.png"], "matches": ["<all_urls>"] }
+  ]
+}
