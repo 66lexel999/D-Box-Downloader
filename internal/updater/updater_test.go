@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +59,13 @@ func TestFetchRejectsIncomplete(t *testing.T) {
 	defer srv.Close()
 	if _, err := Fetch(context.Background(), srv.URL, ""); err == nil {
 		t.Fatal("expected error for manifest missing version/url")
+	}
+}
+
+func TestRelaunchArgsDropAutostart(t *testing.T) {
+	got := relaunchArgs([]string{"-autostart", "-listen", "127.0.0.1:9090", "--autostart=true", "-gui=wails"})
+	want := []string{"-listen", "127.0.0.1:9090", "-gui=wails"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("relaunchArgs = %q, want %q", got, want)
 	}
 }

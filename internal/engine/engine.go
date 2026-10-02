@@ -66,9 +66,10 @@ type Engine struct {
 	rootCtx context.Context
 	wg      sync.WaitGroup
 
-	settingsMu sync.Mutex        // guards cfg.DownloadDir / cfg.Categories / overrides
-	overrides  map[string]string // category -> remembered custom folder (persisted in settings.json)
-	defaultDir string            // app-default base download folder, for Reset
+	settingsMu       sync.Mutex        // guards cfg.DownloadDir / cfg.Categories / overrides / startWithWindows
+	overrides        map[string]string // category -> remembered custom folder (persisted in settings.json)
+	defaultDir       string            // app-default base download folder, for Reset
+	startWithWindows *bool             // "start D BOX when Windows starts"; nil = never chosen (persisted)
 }
 
 // SetCompletionNotifier wires the native download-complete popup. Set in GUI
@@ -805,9 +806,10 @@ func (e *Engine) downloadDir() string {
 // uses the defaults.
 
 type persistedSettings struct {
-	DownloadDir   string            `json:"downloadDir,omitempty"`
-	Categories    map[string]string `json:"categories,omitempty"`    // category -> remembered custom folder
-	MaxConcurrent int               `json:"maxConcurrent,omitempty"` // simultaneous downloads (0 = keep default)
+	DownloadDir      string            `json:"downloadDir,omitempty"`
+	Categories       map[string]string `json:"categories,omitempty"`       // category -> remembered custom folder
+	MaxConcurrent    int               `json:"maxConcurrent,omitempty"`    // simultaneous downloads (0 = keep default)
+	StartWithWindows *bool             `json:"startWithWindows,omitempty"` // nil = never chosen
 }
 
 func (e *Engine) settingsPath() string { return filepath.Join(e.cfg.DataDir, "settings.json") }
@@ -831,6 +833,7 @@ func (e *Engine) loadSettings() {
 	if s.MaxConcurrent > 0 {
 		e.cfg.MaxConcurrent = s.MaxConcurrent
 	}
+	e.startWithWindows = s.StartWithWindows
 	e.cfg.Categories = config.DefaultCategories(e.cfg.DownloadDir)
 	e.overrides = map[string]string{}
 	for k, v := range s.Categories {
@@ -844,7 +847,8 @@ func (e *Engine) loadSettings() {
 
 // saveSettingsLocked persists the base folder + overrides. Caller holds settingsMu.
 func (e *Engine) saveSettingsLocked() {
-	s := persistedSettings{DownloadDir: e.cfg.DownloadDir, Categories: e.overrides, MaxConcurrent: e.cfg.MaxConcurrent}
+	s := persistedSettings{DownloadDir: e.cfg.DownloadDir, Categories: e.overrides, MaxConcurrent: e.cfg.MaxConcurrent,
+		StartWithWindows: e.startWithWindows}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return
@@ -886,6 +890,30 @@ func (e *Engine) maxConcurrent() int {
 		return 1
 	}
 	return e.cfg.MaxConcurrent
+}
+
+// StartWithWindows reports the saved "start D BOX when Windows starts" choice;
+// nil means the user never chose (the app's default applies).
+func (e *Engine) StartWithWindows() *bool {
+	e.settingsMu.Lock()
+	defer e.settingsMu.Unlock()
+	if e.startWithWindows == nil {
+		return nil
+	}
+	on := *e.startWithWindows
+	return &on
+}
+
+// SetStartWithWindows saves the "start D BOX when Windows starts" choice
+// (settings.json is only rewritten when it changes).
+func (e *Engine) SetStartWithWindows(on bool) {
+	e.settingsMu.Lock()
+	defer e.settingsMu.Unlock()
+	if e.startWithWindows != nil && *e.startWithWindows == on {
+		return
+	}
+	e.startWithWindows = &on
+	e.saveSettingsLocked()
 }
 
 // SetMaxConcurrent changes how many downloads run at once (1..16), persists it,

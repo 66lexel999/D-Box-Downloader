@@ -47,6 +47,12 @@ GOOS=windows GOARCH=amd64 go build -trimpath -tags "desktop production" \
   and continue on next launch
 - **Fallbacks** — servers without range support get a single stream; chunked
   responses (unknown size) work too
+- **Starts with Windows** — on by default: D BOX adds itself to your
+  account's sign-in list (`HKCU\…\Run`, no admin rights) and waits hidden in
+  the tray (`DBox.exe -autostart`). Turn it off in Settings → Startup or with
+  "Start with Windows" in the tray menu; switching it off in Task Manager →
+  Startup apps is respected. Launching D BOX again shows the copy that's
+  already running instead of starting a second one
 - **Queue** — N tasks download at once (default 3), the rest wait
 - **Global speed limit** — leaky-bucket across all connections (`-limit 2M`)
 - **Per-connection retries** with exponential backoff, budget resets on progress

@@ -93,8 +93,26 @@ begin
   Result := '';
 end;
 
+// D BOX adds itself to the user's sign-in list ("Start D BOX when Windows
+// starts", on by default). Remove that entry on uninstall — but only when it
+// starts THIS install, not a portable copy kept somewhere else.
+procedure RemoveStartupEntry();
+var
+  Cmd: String;
+begin
+  if RegQueryStringValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'D BOX', Cmd) and
+     (Pos(Lowercase(ExpandConstant('{app}\{#MyAppExeName}')), Lowercase(Cmd)) > 0) then
+  begin
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'D BOX');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', 'D BOX');
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
     KillAppFromInstallDir();
+    RemoveStartupEntry();
+  end;
 end;

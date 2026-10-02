@@ -22,6 +22,7 @@ type Config struct {
 	SpeedLimit     int64  // global bytes/sec cap, 0 = unlimited
 	UserAgent      string
 	OpenBrowser    bool
+	StartHidden    bool              // launched at Windows sign-in (-autostart): open quietly in the tray
 	UIKind         string            // "wails" (WebView2 via Wails) | "walk" (native Win32) | "webview" (raw WebView2) | "off" (headless)
 	GUI            bool              // derived: true unless UIKind=="off"
 	Categories     map[string]string // IDM-style category name -> destination folder
@@ -93,6 +94,7 @@ func FromFlags(args []string) (*Config, error) {
 	fs.IntVar(&cfg.MaxRetries, "retries", cfg.MaxRetries, "retries per connection before failing")
 	fs.StringVar(&cfg.UserAgent, "ua", cfg.UserAgent, "User-Agent header")
 	fs.BoolVar(&cfg.OpenBrowser, "open", cfg.OpenBrowser, "open the UI in the browser (headless mode only)")
+	fs.BoolVar(&cfg.StartHidden, "autostart", false, "started at Windows sign-in: open hidden in the tray")
 	guiFlag := fs.String("gui", "wails", "UI: wails (default, WebView2 HTML), walk (native Win32 widgets), webview (raw WebView2), or off (headless server)")
 	limit := fs.String("limit", "0", "global speed limit, e.g. 2M, 500K (0 = unlimited)")
 

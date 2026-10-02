@@ -174,3 +174,68 @@ func TestContextAliases(t *testing.T) {
 		t.Fatalf("referer=%q headers=%v", ref, h)
 	}
 }
+
+// TestStartupSetting: the Settings switch for "Start D BOX when Windows
+// starts" is hidden when the platform can't do it, reads the live state, and
+// turning it off/on goes through the wired setter.
+func TestStartupSetting(t *testing.T) {
+	s, _, h := newTestServer(t)
+
+	var v map[string]any
+	call(t, h, "GET", "/api/settings", nil, &v)
+	if v["startWithWindowsSupported"] != false || v["startWithWindows"] != nil {
+		t.Fatalf("not wired: %v", v)
+	}
+	if code := call(t, h, "POST", "/api/settings/startup", map[string]bool{"on": true}, nil); code != http.StatusNotImplemented {
+		t.Fatalf("set without a backend: HTTP %d", code)
+	}
+
+	on := true
+	var sets []bool
+	s.SetStartup(func() (bool, error) { return on, nil }, func(b bool) error {
+		sets = append(sets, b)
+		on = b
+		return nil
+	})
+	call(t, h, "GET", "/api/settings", nil, &v)
+	if v["startWithWindowsSupported"] != true || v["startWithWindows"] != true {
+		t.Fatalf("wired: %v", v)
+	}
+	if code := call(t, h, "POST", "/api/settings/startup", map[string]bool{"on": false}, &v); code != http.StatusOK || v["startWithWindows"] != false {
+		t.Fatalf("turn off: HTTP %d %v", code, v)
+	}
+	if len(sets) != 1 || sets[0] {
+		t.Fatalf("setter calls = %v", sets)
+	}
+
+	s.SetStartup(func() (bool, error) { return false, nil }, func(bool) error { return fmt.Errorf("access denied") })
+	var e map[string]string
+	if code := call(t, h, "POST", "/api/settings/startup", map[string]bool{"on": true}, &e); code != http.StatusInternalServerError || !strings.Contains(e["error"], "access denied") {
+		t.Fatalf("failure: HTTP %d %v", code, e)
+	}
+}
+
+// TestShowBringsUpTheWindow: a second launch asks the running copy to show its
+// window through POST /api/show.
+func TestShowBringsUpTheWindow(t *testing.T) {
+	s, _, h := newTestServer(t)
+	var r map[string]bool
+	if code := call(t, h, "POST", "/api/show", nil, &r); code != http.StatusOK || r["shown"] {
+		t.Fatalf("no window wired: HTTP %d %v", code, r)
+	}
+	shown, closing := 0, false
+	s.SetShowFunc(func() bool {
+		if closing {
+			return false
+		}
+		shown++
+		return true
+	})
+	if code := call(t, h, "POST", "/api/show", nil, &r); code != http.StatusOK || !r["shown"] || shown != 1 {
+		t.Fatalf("HTTP %d %v, activations %d", code, r, shown)
+	}
+	closing = true // File → Exit in progress: the new launch must wait, not hand over
+	if code := call(t, h, "POST", "/api/show", nil, nil); code != http.StatusServiceUnavailable || shown != 1 {
+		t.Fatalf("while closing: HTTP %d, activations %d", code, shown)
+	}
+}

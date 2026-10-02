@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"myidm/internal/config"
@@ -57,6 +58,9 @@ func main() {
 	fmt.Println("D BOX UI dev server: http://" + *listen + "   (data in " + root + ")")
 	srv := server.New(eng, log)
 	srv.SetUpdateSource("1.2.0", "", nil) // shows the version; no manifest → updates off
+	var startup atomic.Bool               // a stand-in for the Windows sign-in entry
+	startup.Store(true)
+	srv.SetStartup(func() (bool, error) { return startup.Load(), nil }, func(on bool) error { startup.Store(on); return nil })
 	panic(http.ListenAndServe(*listen, srv.Handler()))
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -61,6 +62,8 @@ const (
 var (
 	findMu    sync.Mutex
 	foundHWND uintptr
+
+	iconApplied atomic.Bool // the window has its title-bar / Alt-Tab icon
 )
 
 // enumCB picks this process's main top-level (visible, un-owned) window.
@@ -124,6 +127,7 @@ func applyWindowIcon() {
 	if big != 0 {
 		pSendMessage.Call(hwnd, wmSetIcon, iconBig, big) // Alt-Tab / task switcher
 	}
+	iconApplied.Store(true)
 }
 
 // forceForeground restores (if minimized), raises and focuses the app window.

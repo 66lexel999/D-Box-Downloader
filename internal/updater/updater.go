@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"myidm/internal/autostart"
 )
 
 // Release is one entry of latest.json.
@@ -195,8 +197,10 @@ func Apply(ctx context.Context, rel *Release, userAgent string, progress func(Pr
 
 	report(Progress{Phase: "restarting"})
 	// Relaunch with the SAME args this process was started with, so an installed
-	// app (launched with none) restarts clean and a custom launch is preserved.
-	if err := relaunch(self, os.Args[1:]); err != nil {
+	// app (launched with none) restarts clean and a custom launch is preserved —
+	// minus -autostart: the user just clicked Update, so the window comes back
+	// instead of the sign-in launch's hide-in-the-tray.
+	if err := relaunch(self, relaunchArgs(os.Args[1:])); err != nil {
 		return fmt.Errorf("schedule relaunch: %w", err)
 	}
 	report(Progress{Phase: "done"})
@@ -271,4 +275,15 @@ func currentExe() (string, error) {
 		self = resolved
 	}
 	return self, nil
+}
+
+// relaunchArgs is args without the -autostart switch.
+func relaunchArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if !autostart.IsFlag(a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }

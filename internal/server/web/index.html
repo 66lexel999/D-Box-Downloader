@@ -381,6 +381,13 @@
   <div class="modal" style="width: 600px;">
     <div class="modal-head"><span class="tone-badge tone-green"><i data-ic="settings" data-sz="20"></i></span><div class="modal-title">Settings</div><button class="icon-btn" data-x title="Close"><i data-ic="close"></i></button></div>
     <div class="modal-body">
+      <div id="optStartupWrap" hidden>
+        <div class="section-cap">Startup</div>
+        <label class="setting" style="border-bottom: 0;">
+          <div><div class="set-title">Start D BOX when Windows starts</div><div class="hint">Opens quietly in the tray when you sign in, ready for downloads from your browser. Untick to start it only when you open it.</div></div>
+          <input type="checkbox" class="switch" id="optStartup">
+        </label>
+      </div>
       <div class="section-cap">Download folder</div>
       <div class="field-row">
         <div class="pathbox selectable" id="optBase"></div>
@@ -1022,6 +1029,8 @@ function renderOptions() {
   $("#optBase").title = optState.downloadDir || "";
   if (optState.maxConcurrent) $("#optConc").value = optState.maxConcurrent;
   $("#optShutdown").checked = !!optState.shutdownWhenDone;
+  $("#optStartupWrap").hidden = !optState.startWithWindowsSupported;
+  $("#optStartup").checked = !!optState.startWithWindows;
   $("#optDev").checked = devMode();
   const cats = optState.categories || {}, custom = optState.custom || {};
   const names = Object.keys(cats).sort((a, b) => a === "General" ? -1 : b === "General" ? 1 : a.localeCompare(b));
@@ -1067,6 +1076,14 @@ $("#optDev").addEventListener("change", () => {
   lsSet("dbox.dev", $("#optDev").checked ? "1" : "0");
   renderToolbar(); // Preview + UI icons appear/vanish immediately
   toast($("#optDev").checked ? "Developer mode on — Preview & UI icons added to the toolbar" : "Developer mode off");
+});
+$("#optStartup").addEventListener("change", async () => {
+  const on = $("#optStartup").checked;
+  try {
+    optState = await api("POST", "/api/settings/startup", { on });
+    renderOptions(); // shows what Windows will really do
+    toast(on ? "D BOX will start when Windows starts" : "D BOX won't start with Windows");
+  } catch (e) { toast(e.message); $("#optStartup").checked = !on; }
 });
 $("#optShutdown").addEventListener("change", async () => {
   const on = $("#optShutdown").checked;

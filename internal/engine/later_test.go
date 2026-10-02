@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -79,5 +80,41 @@ func TestSetMaxConcurrent(t *testing.T) {
 	e2.loadSettings()
 	if got := e2.maxConcurrent(); got != 4 {
 		t.Fatalf("reloaded maxConcurrent = %d, want 4", got)
+	}
+}
+
+// TestStartWithWindowsSetting verifies the "start with Windows" choice is
+// unset by default, persisted, reloaded, and that re-saving the same choice
+// doesn't rewrite settings.json.
+func TestStartWithWindowsSetting(t *testing.T) {
+	e := newSchedTestEngine(t)
+	if got := e.StartWithWindows(); got != nil {
+		t.Fatalf("fresh install: got %v, want nil (never chosen)", *got)
+	}
+	e.SetStartWithWindows(false)
+	if got := e.StartWithWindows(); got == nil || *got {
+		t.Fatalf("after SetStartWithWindows(false): %v", got)
+	}
+
+	reload := func() *Engine {
+		e2 := newSchedTestEngine(t)
+		e2.cfg.DataDir = e.cfg.DataDir
+		e2.loadSettings()
+		return e2
+	}
+	if got := reload().StartWithWindows(); got == nil || *got {
+		t.Fatalf("reloaded choice = %v, want off", got)
+	}
+
+	// Same choice again: no write (main calls this at every launch).
+	path := e.settingsPath()
+	os.Remove(path)
+	e.SetStartWithWindows(false)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("an unchanged choice rewrote settings.json")
+	}
+	e.SetStartWithWindows(true)
+	if got := reload().StartWithWindows(); got == nil || !*got {
+		t.Fatalf("reloaded choice = %v, want on", got)
 	}
 }

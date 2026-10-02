@@ -6,6 +6,7 @@
 //
 // Run:    DBox.exe                       open the native WebView2 window (default)
 //
+//	DBox.exe -autostart            Windows sign-in launch: wait hidden in the tray
 //	DBox.exe -gui=gio              native pure-Go (Gio) window
 //	DBox.exe -gui=off -open        headless server + browser UI
 //	DBox.exe -dialog -url <u>      internal: native "New Download" window
@@ -31,11 +32,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"time"
 
+	"myidm/internal/autostart"
 	"myidm/internal/config"
 	"myidm/internal/engine"
 	"myidm/internal/gui"
+	"myidm/internal/instance"
 	"myidm/internal/procutil"
 	"myidm/internal/server"
 	"myidm/internal/store"
@@ -121,12 +125,17 @@ func runWindow(args []string, fn func(serverURL, id string) error) error {
 }
 
 func run() error {
-	updater.CleanupOld() // remove the <exe>.old left by a previous self-update
-
 	cfg, err := config.FromFlags(os.Args[1:])
 	if err != nil {
 		return err
 	}
+	release, ok := claimInstance(cfg)
+	if !ok {
+		return nil // another D BOX is running (and was asked to show itself)
+	}
+	defer release()
+
+	updater.CleanupOld() // remove the <exe>.old left by a previous self-update
 	// One-time MyIDM -> flowerX move, BEFORE the new dirs are created (the absence
 	// of the new dir is what triggers the rename of the old one).
 	migrationNotes := migrateFromMyIDM(cfg)
@@ -156,8 +165,13 @@ func run() error {
 	}
 
 	s := server.New(eng, log)
+	var closing atomic.Bool // set once shutdown begins
 
 	serverURL := "http://" + cfg.Listen
+
+	if cfg.GUI {
+		setupStartWithWindows(eng, s, log)
+	}
 
 	// The Options panel's folder "Browse" uses the native chooser in any GUI mode.
 	if cfg.GUI {
@@ -193,6 +207,16 @@ func run() error {
 		s.SetDetailOpener(func(id string) error { spawn("-detail", "-id", id); return nil })
 		s.SetDoneOpener(func(id string) error { spawn("-done", "-id", id); return nil })
 		s.SetQuit(wailsui.Quit) // File → Exit really quits (the X closes to tray)
+		// A second launch (desktop icon / Start menu) shows this window — say, from
+		// the tray it has waited in since sign-in. Not while exiting: that launch
+		// then takes over once this process is gone.
+		s.SetShowFunc(func() bool {
+			if closing.Load() || wailsui.Quitting() {
+				return false
+			}
+			wailsui.Activate()
+			return true
+		})
 		eng.SetCompletionNotifier(func(id string) { spawn("-done", "-id", id) })
 	case "walk":
 		s.SetDialogOpener(func(q url.Values) error { walkui.OpenDialog(eng, log, q); return nil })
@@ -217,6 +241,7 @@ func run() error {
 	}()
 
 	shutdown := func() {
+		closing.Store(true)
 		log.Info("shutting down")
 		eng.Shutdown(5 * time.Second)
 		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -250,7 +275,7 @@ func run() error {
 		// the HTML UI renders those as in-page modals. Wails just hosts the window
 		// and serves the existing handler — no native ListView, so no flicker.
 		if runErr = serverFailed(); runErr == nil {
-			if guiErr := wailsui.Run(s.Handler(), log, nil); guiErr != nil {
+			if guiErr := wailsui.Run(s.Handler(), log, nil, cfg.StartHidden); guiErr != nil {
 				log.Warn("wails window unavailable; serving in the browser instead", "err", guiErr)
 				go openBrowser("http://" + cfg.Listen)
 				select {
@@ -291,6 +316,78 @@ func run() error {
 
 	shutdown()
 	return runErr
+}
+
+// claimInstance makes this process THE running D BOX for its data folder. When
+// another copy already runs — typically hidden in the tray since sign-in — it
+// is asked to show its window and ok is false: this launch just exits, instead
+// of starting a second download engine on the same tasks and files. A copy
+// that is exiting (File → Exit) answers "closing"; this launch then takes over
+// as soon as it's gone.
+func claimInstance(cfg *config.Config) (release func(), ok bool) {
+	release, first := instance.Acquire(cfg.DataDir)
+	if first {
+		return release, true
+	}
+	if cfg.StartHidden {
+		return nil, false // sign-in launch while D BOX already runs: nothing to do
+	}
+	gui.AllowForeground() // let the running copy come to the front
+	client := &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(300 * time.Millisecond) {
+		if resp, err := client.Post("http://"+cfg.Listen+"/api/show", "application/json", nil); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil, false
+			}
+		}
+		// No answer (still starting up, or shutting down): once it has exited,
+		// its claim is free and this launch becomes D BOX.
+		if release, first = instance.Acquire(cfg.DataDir); first {
+			return release, true
+		}
+	}
+	gui.MessageBox("D BOX", "D BOX is already running but isn't responding.\n\n"+
+		"If its window doesn't appear, end DBox.exe in Task Manager, then open D BOX again.")
+	return nil, false
+}
+
+// setupStartWithWindows applies the "Start D BOX when Windows starts" choice —
+// on unless the user turned it off — and wires its switch in Settings and in
+// the tray menu. The sign-in entry always points at the exe that runs, so a
+// moved or re-downloaded D BOX keeps starting.
+func setupStartWithWindows(eng *engine.Engine, s *server.Server, log *slog.Logger) {
+	exe, err := os.Executable()
+	if err != nil || !autostart.Supported() || !autostart.Manageable(exe) {
+		return
+	}
+	on, err := autostart.Sync(eng.StartWithWindows(), exe)
+	if err != nil {
+		log.Warn("start with Windows: couldn't update the sign-in entry", "err", err)
+	}
+	eng.SetStartWithWindows(on)
+
+	get := func() (bool, error) {
+		st, err := autostart.Status()
+		return st.On(), err
+	}
+	set := func(on bool) error {
+		var err error
+		if on {
+			err = autostart.Enable(exe)
+		} else {
+			err = autostart.Disable()
+		}
+		if err != nil {
+			log.Warn("start with Windows: change failed", "on", on, "err", err)
+			return err
+		}
+		eng.SetStartWithWindows(on)
+		log.Info("start with Windows", "on", on)
+		return nil
+	}
+	s.SetStartup(get, set)
+	gui.SetTrayStartupToggle(func() bool { on, _ := get(); return on }, set)
 }
 
 // newLogger writes to both stderr and <dataDir>/myidm.log, so logs survive a

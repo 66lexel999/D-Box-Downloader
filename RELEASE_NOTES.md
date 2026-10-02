@@ -1,3 +1,15 @@
+D BOX 1.2.1
+
+• D BOX now starts when Windows starts. It opens quietly in the tray when you
+  sign in, so downloads from your browser work right away. Don't want that?
+  Untick "Start D BOX when Windows starts" in Settings, or "Start with
+  Windows" in the tray icon's right-click menu. Turning it off in Task
+  Manager's Startup apps is respected too.
+• Opening D BOX while it's already running (for example from the desktop
+  icon, while it waits in the tray) now brings up the open window instead of
+  silently doing nothing.
+• The tray icon comes back if Windows Explorer restarts.
+
 D BOX 1.2.0
 
 • A brand-new look: every window was redesigned — a sidebar with Downloads and

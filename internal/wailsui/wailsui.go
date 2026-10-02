@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"myidm/internal/gui"
 
@@ -27,13 +28,13 @@ var (
 	ctxMu      sync.Mutex
 	winCtx     context.Context
 	reallyQuit bool // set by Quit() so OnBeforeClose lets the window actually close
-	trayOK     bool // tray icon is up → close hides to it; else close just minimizes
 )
 
 // Run opens the window and blocks on the Wails event loop until it closes.
 // handler serves both the UI (GET /) and the JSON API (/api/*). onClose runs on
-// shutdown (engine + server teardown).
-func Run(handler http.Handler, log *slog.Logger, onClose func()) error {
+// shutdown (engine + server teardown). startHidden (the Windows sign-in launch)
+// keeps the window hidden — D BOX waits in the tray until it's opened.
+func Run(handler http.Handler, log *slog.Logger, onClose func(), startHidden bool) error {
 	return wails.Run(&options.App{
 		Title:     "D BOX — Download Manager",
 		Width:     763, // default (your current size ÷ 1.39 DPI); overridden by the remembered size
@@ -43,7 +44,8 @@ func Run(handler http.Handler, log *slog.Logger, onClose func()) error {
 		// Assets nil + Handler set => every request (GET UI + POST/DELETE API)
 		// is served by our existing mux.
 		AssetServer:      &assetserver.Options{Handler: handler},
-		BackgroundColour: &options.RGBA{R: 0x30, G: 0x33, B: 0x36, A: 255}, // --panel, avoids white flash
+		BackgroundColour: &options.RGBA{R: 0x12, G: 0x12, B: 0x12, A: 255}, // --bg, avoids a white flash
+		StartHidden:      startHidden,
 		OnStartup: func(ctx context.Context) {
 			ctxMu.Lock()
 			winCtx = ctx
@@ -57,10 +59,13 @@ func Run(handler http.Handler, log *slog.Logger, onClose func()) error {
 			// restores it; "Exit" really quits.
 			ready := make(chan bool, 1)
 			go gui.RunTray("D BOX — Download Manager", Activate, Quit, ready)
-			ok := <-ready
-			ctxMu.Lock()
-			trayOK = ok
-			ctxMu.Unlock()
+			if ok := <-ready; !ok && startHidden {
+				// Started hidden but there's no tray icon to open it from: show it
+				// minimized on the taskbar so D BOX is still reachable.
+				log.Warn("tray icon unavailable at startup; showing the window minimized")
+				wruntime.WindowShow(ctx)
+				wruntime.WindowMinimise(ctx)
+			}
 		},
 		// Wails doesn't set a window icon, so the title bar shows the generic
 		// program icon — put our own there once the window/DOM exists.
@@ -74,12 +79,12 @@ func Run(handler http.Handler, log *slog.Logger, onClose func()) error {
 				gui.SaveWinSize("main", w, h) // remember size on every close (hide-to-tray and real exit)
 			}
 			ctxMu.Lock()
-			rq, hasTray := reallyQuit, trayOK
+			rq := reallyQuit
 			ctxMu.Unlock()
 			if rq {
 				return false // allow the close
 			}
-			if hasTray {
+			if gui.TrayActive() {
 				wruntime.WindowHide(ctx) // hide to tray (taskbar button gone, like IDM)
 			} else {
 				wruntime.WindowMinimise(ctx) // no tray: keep running, restorable from taskbar
@@ -113,6 +118,13 @@ func Quit() {
 	}
 }
 
+// Quitting reports that a real exit is under way (the window is going away).
+func Quitting() bool {
+	ctxMu.Lock()
+	defer ctxMu.Unlock()
+	return reallyQuit
+}
+
 // Activate brings the window to the foreground. Called when the browser
 // extension captures a download (POST /api/prompt) so the in-page New Download
 // dialog surfaces over the browser instead of only flashing in the taskbar.
@@ -127,5 +139,13 @@ func Activate() {
 		wruntime.WindowShow(ctx)
 		wruntime.WindowCenter(ctx) // re-center every time it reappears (e.g. from the tray)
 	}
+	// WindowShow is queued to the UI thread: wait (briefly) until the window is
+	// really up before raising it, or a window that started hidden is missed.
+	for i := 0; i < 40 && ourWindow() == 0; i++ {
+		time.Sleep(25 * time.Millisecond)
+	}
 	forceForeground()
+	if !iconApplied.Load() {
+		applyWindowIcon() // a window that started hidden had nothing to put it on
+	}
 }

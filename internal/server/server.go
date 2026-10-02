@@ -83,6 +83,10 @@ type Server struct {
 	pick   func(initial string) (string, error) // native "choose folder" dialog (Options); nil = none
 	quit   func()                               // request a real app exit (close-to-tray mode); nil = N/A
 
+	startupGet func() (bool, error) // is D BOX set to start with Windows? nil = option not offered
+	startupSet func(on bool) error  // turn starting with Windows on/off
+	show       func() bool          // bring the main window up; false = can't (closing); nil = no window
+
 	fileIcon    func(path string) ([]byte, bool, error) // shell icon as PNG + degraded flag; nil = none
 	iconGeneric func(ext string) bool                   // ext (".zip") has only a generic/Explorer default handler
 	iconMu      sync.Mutex
@@ -174,6 +178,17 @@ func (s *Server) SetFolderPicker(f func(initial string) (string, error)) { s.pic
 // SetQuit wires a real application exit (File → Exit, when the window otherwise
 // closes to the tray). nil = no-op.
 func (s *Server) SetQuit(f func()) { s.quit = f }
+
+// SetShowFunc wires POST /api/show: a second launch of D BOX handing over to
+// this one. f brings the main window up, or reports false when the app is
+// closing (the new launch then takes over once this one has exited).
+func (s *Server) SetShowFunc(f func() bool) { s.show = f }
+
+// SetStartup wires the "Start D BOX when Windows starts" option in Settings:
+// get reports the current state, set changes it. Unset = option hidden.
+func (s *Server) SetStartup(get func() (bool, error), set func(on bool) error) {
+	s.startupGet, s.startupSet = get, set
+}
 
 // SetIconResolver wires native per-file icon extraction (GET /api/icon) and the
 // "does this extension only have a generic default handler?" check. The icon
@@ -436,6 +451,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/reset", s.handleResetPaths)
 	mux.HandleFunc("POST /api/settings/concurrent", s.handleSetConcurrent)
 	mux.HandleFunc("POST /api/settings/shutdown", s.handleSetShutdown)
+	mux.HandleFunc("POST /api/settings/startup", s.handleSetStartup)
+	mux.HandleFunc("POST /api/show", s.handleShow)
 	mux.HandleFunc("POST /api/pick-folder", s.handlePickFolder)
 	mux.HandleFunc("POST /api/quit", s.handleQuit)
 	mux.HandleFunc("GET /api/update/check", s.handleUpdateCheck)
@@ -593,8 +610,53 @@ func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
 // settingsView is the folder-settings payload shared by the settings endpoints.
 func (s *Server) settingsView() map[string]any {
 	dir, cats, custom, def, maxc := s.eng.Settings()
-	return map[string]any{"downloadDir": dir, "categories": cats, "custom": custom, "defaultDir": def,
-		"maxConcurrent": maxc, "shutdownWhenDone": s.eng.ShutdownWhenDone()}
+	v := map[string]any{"downloadDir": dir, "categories": cats, "custom": custom, "defaultDir": def,
+		"maxConcurrent": maxc, "shutdownWhenDone": s.eng.ShutdownWhenDone(),
+		"startWithWindowsSupported": s.startupGet != nil}
+	if s.startupGet != nil {
+		on, err := s.startupGet()
+		if err != nil {
+			s.log.Warn("start with Windows: can't read the sign-in entry", "err", err)
+		}
+		v["startWithWindows"] = on
+	}
+	return v
+}
+
+// handleSetStartup turns "Start D BOX when Windows starts" on or off.
+func (s *Server) handleSetStartup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		On bool `json:"on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if s.startupSet == nil {
+		writeError(w, http.StatusNotImplemented, "starting with Windows isn't available in this build")
+		return
+	}
+	if err := s.startupSet(req.On); err != nil {
+		writeError(w, http.StatusInternalServerError, "couldn't change the Windows startup setting: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.settingsView())
+}
+
+// handleShow brings the main window up — sent by a second launch of D BOX
+// (desktop icon, Start menu) to the copy already running, e.g. hidden in the
+// tray since sign-in. 503 while this copy is closing, so the new launch waits
+// and takes over instead of handing off to a window that's going away.
+func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
+	if s.show == nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"shown": false}) // headless: no window to show
+		return
+	}
+	if !s.show() {
+		writeError(w, http.StatusServiceUnavailable, "D BOX is closing")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"shown": true})
 }
 
 // handleSetShutdown arms/disarms "turn off the PC when all downloads finish".
