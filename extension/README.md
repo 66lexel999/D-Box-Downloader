@@ -44,7 +44,9 @@ through yt-dlp with browser impersonation.
 3. `brave://extensions` → **Developer mode** on → **Load unpacked** → this folder.
    To update an unpacked copy, replace the files and click the extension's
    **reload** (↻) button, then reload open tabs.
-4. Pin the toolbar icon; it shows D BOX's status (green = running).
+4. Pin the toolbar icon. **One click opens the D BOX window** (even when D BOX
+   is waiting hidden in the tray). Right-click it to switch **Capture
+   downloads** on/off or open **Options** (D BOX's address).
 
 ## Why the overlay is in a Shadow DOM
 

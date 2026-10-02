@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "D BOX Integration",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "Captures browser downloads (like IDM) and hands them to D BOX's New Download dialog. No browser setting changes needed.",
   "permissions": [
     "downloads",
@@ -9,7 +9,8 @@
     "notifications",
     "tabs",
     "cookies",
-    "webRequest"
+    "webRequest",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -31,8 +32,7 @@
     }
   ],
   "action": {
-    "default_title": "D BOX Integration",
-    "default_popup": "action.html",
+    "default_title": "Open D BOX",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

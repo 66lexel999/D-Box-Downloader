@@ -41,7 +41,8 @@ service. No data is collected, stored remotely, sold, or shared.
 
 ## Your control
 
-- Toggle capture off any time from the extension's popup.
+- Toggle capture off any time: right-click the extension's toolbar icon →
+  **Capture downloads**.
 - Remove the extension to stop all access immediately.
 - Cookies are only read when you choose to download something; if D BOX isn't
   running, nothing is sent anywhere.

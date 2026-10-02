@@ -69,6 +69,8 @@ desktop download manager running on the user's own computer.
   `Tell the user when D BOX isn't running so a captured download isn't silently lost.`
 - **tabs** —
   `Open the New Download popup window and associate detected media with the correct tab.`
+- **contextMenus** —
+  `Add a "Capture downloads" on/off switch to the extension's own toolbar-icon menu.`
 - **cookies** —
   `When the user downloads a file or video, pass that site's cookies (e.g. their existing sign-in session) to the local D BOX app so its request matches the browser's and the site serves the file. Cookies are sent only to 127.0.0.1 (the user's own computer) and never to any remote server.`
 - **webRequest** —

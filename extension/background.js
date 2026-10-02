@@ -551,3 +551,62 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   }
   return true;
 });
+
+// ---- toolbar icon: one click opens D BOX ------------------------------------
+// Clicking the icon brings up the D BOX window that's running (often hidden in
+// the tray since Windows started). Capture on/off is on the icon's right-click
+// menu; the D BOX address is under Options there too.
+const MENU_CAPTURE = "dbox-capture";
+
+chrome.action.onClicked.addListener(() => { openApp(); });
+
+async function openApp() {
+  await settingsReady;
+  let r;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    r = await fetch(base() + "/api/show", { method: "POST", signal: ctrl.signal });
+    clearTimeout(t);
+  } catch {
+    myidmUp = false; lastPing = Date.now();
+    chrome.notifications.create({
+      type: "basic", iconUrl: "icons/icon128.png",
+      title: "D BOX is not running",
+      message: "Open D BOX from the Start menu or desktop. It starts with Windows by default, so it'll be ready next time."
+    }, () => void chrome.runtime.lastError);
+    return;
+  }
+  myidmUp = true; lastPing = Date.now();
+  const d = r.ok ? await r.json().catch(() => ({})) : {};
+  // No window to show (D BOX runs without one, or is older than 1.2.1):
+  // open its interface in a tab instead.
+  if (!r.ok || !d.shown) chrome.tabs.create({ url: base() + "/" });
+}
+
+// The right-click menu is rebuilt on install/update and on browser start, and
+// kept in step with the setting (which the Options page can change too).
+function buildMenu() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: MENU_CAPTURE, title: "Capture downloads", type: "checkbox",
+      checked: !!settings.enabled, contexts: ["action"]
+    }, () => void chrome.runtime.lastError);
+  });
+}
+function reflectCapture() {
+  chrome.contextMenus.update(MENU_CAPTURE, { checked: !!settings.enabled }, () => void chrome.runtime.lastError);
+  chrome.action.setTitle({ title: settings.enabled ? "Open D BOX" : "Open D BOX (download capture is off)" });
+}
+chrome.runtime.onInstalled.addListener(() => { settingsReady.then(() => { buildMenu(); reflectCapture(); }); });
+chrome.runtime.onStartup.addListener(() => { settingsReady.then(() => { buildMenu(); reflectCapture(); }); });
+chrome.contextMenus.onClicked.addListener(async (info) => {
+  if (info.menuItemId !== MENU_CAPTURE) return;
+  await settingsReady;
+  settings.enabled = !!info.checked;
+  chrome.storage.local.set({ settings });
+});
+chrome.storage.onChanged.addListener((c, area) => {
+  if (area === "local" && c.settings) reflectCapture();
+});
+settingsReady.then(reflectCapture);

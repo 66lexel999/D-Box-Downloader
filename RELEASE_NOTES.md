@@ -9,6 +9,8 @@ D BOX 1.2.1
   icon, while it waits in the tray) now brings up the open window instead of
   silently doing nothing.
 • The tray icon comes back if Windows Explorer restarts.
+• Browser extension 3.4.0: one click on its toolbar icon opens the D BOX
+  window. Capture on/off moved to the icon's right-click menu.
 
 D BOX 1.2.0
 
